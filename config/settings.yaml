@@ -1,0 +1,40 @@
+# Trading System Configuration
+
+# Exchange
+exchange:
+  name: "binance"
+  sandbox: true
+  symbol: "BTC/USDT"
+  timeframe: "1m"
+
+# Data
+data:
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+  logs_dir: "data/logs"
+  lookback_bars: 100
+
+# Feature Engine
+features:
+  momentum_periods: [1, 5, 10]
+  volatility_periods: [1, 5, 10]
+  rsi_period: 14
+  sma_periods: [9, 21]
+
+# Market thresholds
+market:
+  min_spread_pct: 0.01
+  max_spread_pct: 0.5
+  min_depth_usdt: 10000
+
+# Model paths
+models:
+  zone_model: "data/models/zone_validity_model.pkl"
+  regime_hmm: "data/models/regime_hmm.pkl"
+  regime_classifier: "data/models/regime_classifier.pkl"
+  experts_dir: "data/models/experts/"
+
+# Logging
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

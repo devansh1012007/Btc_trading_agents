@@ -1,0 +1,4 @@
+- add webhooks for taking in data 
+- add log data in a log file too
+- make the expert decison output more detailed in contracts.py
+- add multi-processing at expert's opinion layer
