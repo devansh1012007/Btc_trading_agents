@@ -1,0 +1,2 @@
+# flaws in system 
+we either need dynamic features or no features at all. coz every week the main indicator changes but the model might not be trained forthat new feature + if we do feature reduction then we need to change or re train model every week (or every time it makes big losses)

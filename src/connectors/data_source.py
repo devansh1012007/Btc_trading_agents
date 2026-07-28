@@ -29,7 +29,8 @@ class CCXTConnector:
         self.sandbox = sandbox
         
         # Create exchange instance
-        exchange_class = getattr(ccxt, exchange_name)
+        try : exchange_class = getattr(ccxt, exchange_name)
+        except Exception as e: logger.error(f"Failed to get exchange_class {e}")
         self.exchange = exchange_class({
             'enableRateLimit': True,
             'sandbox': sandbox,
@@ -37,12 +38,7 @@ class CCXTConnector:
         
         logger.info(f"Initialized {exchange_name} (sandbox={sandbox})")
     
-    def fetch_ohlcv(
-        self,
-        symbol: str = "BTC/USDT",
-        timeframe: str = "1m",
-        limit: int = 1000,
-    ) -> pd.DataFrame:
+    def fetch_ohlcv(self,symbol: str = "BTC/USDT",timeframe: str = "1m",limit: int = 1000,) -> pd.DataFrame:
         """
         Fetch OHLCV bars.
         

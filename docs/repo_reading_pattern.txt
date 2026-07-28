@@ -1,0 +1,25 @@
+scr/state/contracts.py
+        |
+        |
+        V
+scr/state/serialization.py
+        |
+        |
+        V
+scr/connectors/data_source.py
+        |
+        |
+        V
+scr/layers/market_data.py
+        |
+        |
+        V
+scr/layers/feature_engine.py        
+        |
+        |
+        V
+scr/layers/structure_engine.py
+        |
+        |
+        V
+scr/pipeline.py

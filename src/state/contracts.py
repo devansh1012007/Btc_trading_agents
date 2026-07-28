@@ -13,9 +13,8 @@ import numpy as np
 # ============================================================================
 # REGIME & STRUCTURE ENUMS
 # ============================================================================
-
+""" RegimeType might be abstract in futre version if the classification is going to be unsupervised"""
 class RegimeType(Enum):
-    """Market regime classification."""
     TRENDING_UP = "trending_up"
     TRENDING_DOWN = "trending_down"
     CHOP_RANGE = "chop_range"
@@ -34,7 +33,7 @@ class ExpertAction(Enum):
 # LAYER 1: MARKET SNAPSHOT
 # ============================================================================
 
-@dataclass(frozen=True)
+@dataclass(frozen=True) #class immutable after initialization.
 class MarketSnapshot:
     """
     Raw market state at a given timestamp.
@@ -132,7 +131,7 @@ class FeatureVector:
     
     @classmethod
     def from_dict(cls, d: Dict) -> 'FeatureVector':
-        """Create from dict."""
+        """Creates class variable from dict."""
         return cls(**d)
 
 
@@ -166,6 +165,9 @@ class Zone:
     liquidity_score: float  # based on volume at zone
     survival_probability: float  # ML: prob zone stays relevant
     regime_relevance: Dict[str, float] = field(default_factory=dict)  # per-regime importance
+    """
+    the above one is used to define a field with a mutable default value (in this case, an empty dictionary) while providing strict type hinting.
+    """
     
     zone_type: str = "support"  # "support", "resistance"
     created_at: int = 0
@@ -333,7 +335,7 @@ class RouterDecision:
     
     # All options ranked (for debugging)
     expert_ranking: Dict[str, float] = field(default_factory=dict)
-    reasoning: str = ""
+    reasoning: Optional[str] = None
 
 
 # ============================================================================
@@ -417,6 +419,9 @@ class SystemState:
     
     # Results
     realized_pnl: Optional[float] = None  # actual PnL after execution
+    """
+    this can cause coz issue if this is not Async coz realised PnL make be know 2 candles later (other option is to save the PnL at that given point of time which will cause wrong data collecetion but dont do that )
+    """
     
     def to_dict(self) -> Dict:
         """Convert to dict for serialization."""

@@ -38,7 +38,7 @@ class FeatureEngine:
             'spread_pct': snapshot.spread_pct,
         })
         
-        # Keep only lookback_bars
+        # Keep only lookback_bars # should we make it while loop?
         if len(self.price_history) > self.lookback_bars:
             self.price_history.pop(0)
     
@@ -86,7 +86,7 @@ class FeatureEngine:
         
         # ===== ORDERFLOW FEATURES =====
         
-        # Simple imbalance (bid vs ask volume)
+        # Simple imbalance (bid vs ask volume) # make sure the model is not trained for HFT and dosen't mainly full fill bid vs ask price
         total_depth = snapshot.bid_volume + snapshot.ask_volume
         if total_depth > 0:
             imbalance_ratio = snapshot.ask_volume / total_depth
