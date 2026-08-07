@@ -20,6 +20,7 @@ features:
   volatility_periods: [1, 5, 10]
   rsi_period: 14
   sma_periods: [9, 21]
+  volume_zscore_period: 20
 
 # Market thresholds
 market:
@@ -27,12 +28,39 @@ market:
   max_spread_pct: 0.5
   min_depth_usdt: 10000
 
+# Dynamic Structure Engine (Phase 2, Module A -- §6, §8)
+structure:
+  lookback_bars: 50
+  pivot_window: 5
+  min_zone_separation_pct: 1.0
+  zone_decay_bars: 100
+  zone_label_horizon_bars: 20
+  breakout_survival_penalty: 0.3
+
+# Regime Detection Layer (Phase 2, Module B -- §7, §8)
+regime:
+  n_states: 3               # trending_up / trending_down / chop_range; panic handled separately
+  confidence_floor: 0.35
+  persistence_window_bars: 20
+  persistence_transition_threshold: 0.6
+  panic_z_threshold: 3.0
+  observation_features: [momentum_5m, momentum_10m, volatility_5m, volatility_10m, volume_zscore]
+
 # Model paths
 models:
   zone_model: "data/models/zone_validity_model.pkl"
   regime_hmm: "data/models/regime_hmm.pkl"
   regime_classifier: "data/models/regime_classifier.pkl"
   experts_dir: "data/models/experts/"
+  zone_survival_blend_weight: 0.0   # 0 = pure rule-based, 1 = pure ML; ramp up after validation
+  regime_serving_source: "auto"     # "auto" | "hmm_filter" | "lgbm_classifier" | "rule_based"
+
+# Walk-forward validation (Phase 2, shared infra -- §5.2)
+backtest:
+  train_bars: 5000
+  test_bars: 1000
+  step_bars: 1000
+  embargo_bars: 30
 
 # Logging
 logging:

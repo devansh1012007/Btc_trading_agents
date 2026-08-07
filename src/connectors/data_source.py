@@ -16,18 +16,18 @@ logger = logging.getLogger(__name__)
 
 class CCXTConnector:
     """Wrapper around CCXT for BTC data fetching."""
-    
+
     def __init__(self, exchange_name: str = "binance", sandbox: bool = True):
         """
         Initialize CCXT exchange connection.
-        
+
         Args:
             exchange_name: 'binance', 'bybit', etc.
             sandbox: Use testnet/sandbox if available
         """
         self.exchange_name = exchange_name
         self.sandbox = sandbox
-        
+
         # Create exchange instance
         try : exchange_class = getattr(ccxt, exchange_name)
         except Exception as e: logger.error(f"Failed to get exchange_class {e}")
@@ -35,18 +35,18 @@ class CCXTConnector:
             'enableRateLimit': True,
             'sandbox': sandbox,
         })
-        
+
         logger.info(f"Initialized {exchange_name} (sandbox={sandbox})")
-    
+
     def fetch_ohlcv(self,symbol: str = "BTC/USDT",timeframe: str = "1m",limit: int = 1000,) -> pd.DataFrame:
         """
         Fetch OHLCV bars.
-        
+
         Args:
             symbol: Trading pair (e.g. 'BTC/USDT')
             timeframe: '1m', '5m', '1h', etc.
             limit: Number of bars to fetch
-        
+
         Returns:
             DataFrame with columns: timestamp, open, high, low, close, volume
         """
@@ -63,7 +63,7 @@ class CCXTConnector:
         except Exception as e:
             logger.error(f"Failed to fetch {symbol}: {e}")
             raise
-    
+
     def fetch_ticker(self, symbol: str = "BTC/USDT") -> Dict:
         """Fetch current bid/ask/price."""
         try:
@@ -79,7 +79,7 @@ class CCXTConnector:
         except Exception as e:
             logger.error(f"Failed to fetch ticker {symbol}: {e}")
             raise
-    
+
     def fetch_funding_rate(self, symbol: str = "BTC/USDT") -> Optional[float]:
         """Fetch current funding rate (futures only)."""
         try:
@@ -89,23 +89,23 @@ class CCXTConnector:
         except Exception as e:
             logger.warning(f"Could not fetch funding rate: {e}")
         return None
-    
+
     def save_ohlcv_local(self, df: pd.DataFrame, symbol: str, data_dir: str = "data/raw"):
         """Save OHLCV to local Parquet (date-partitioned)."""
         Path(data_dir).mkdir(parents=True, exist_ok=True)
-        
+
         # Partition by date
         df['date'] = df['timestamp'].dt.date
         for date, group in df.groupby('date'):
             path = f"{data_dir}/{symbol.replace('/', '_')}_{date}.parquet"
             group.to_parquet(path, compression='snappy')
             logger.info(f"Saved {len(group)} rows to {path}")
-    
+
     def load_ohlcv_local(self, symbol: str, date_range: Tuple, data_dir: str = "data/raw") -> pd.DataFrame:
         """Load OHLCV from local Parquet files."""
         symbol_str = symbol.replace('/', '_')
         files = sorted(Path(data_dir).glob(f"{symbol_str}_*.parquet"))
-        
+
         dfs = []
         for f in files:
             try:
@@ -114,11 +114,11 @@ class CCXTConnector:
                 dfs.append(df)
             except Exception as e:
                 logger.warning(f"Could not load {f}: {e}")
-        
+
         if not dfs:
             logger.warning(f"No local data found for {symbol}")
             return pd.DataFrame()
-        
+
         df_all = pd.concat(dfs, ignore_index=True)
         df_all = df_all.sort_values('timestamp')
         logger.info(f"Loaded {len(df_all)} local bars for {symbol}")
