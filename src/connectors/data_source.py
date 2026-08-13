@@ -18,17 +18,9 @@ class CCXTConnector:
     """Wrapper around CCXT for BTC data fetching."""
 
     def __init__(self, exchange_name: str = "binance", sandbox: bool = True):
-        """
-        Initialize CCXT exchange connection.
-
-        Args:
-            exchange_name: 'binance', 'bybit', etc.
-            sandbox: Use testnet/sandbox if available
-        """
         self.exchange_name = exchange_name
         self.sandbox = sandbox
 
-        # Create exchange instance
         try : exchange_class = getattr(ccxt, exchange_name)
         except Exception as e: logger.error(f"Failed to get exchange_class {e}")
         self.exchange = exchange_class({
@@ -39,17 +31,6 @@ class CCXTConnector:
         logger.info(f"Initialized {exchange_name} (sandbox={sandbox})")
 
     def fetch_ohlcv(self,symbol: str = "BTC/USDT",timeframe: str = "1m",limit: int = 1000,) -> pd.DataFrame:
-        """
-        Fetch OHLCV bars.
-
-        Args:
-            symbol: Trading pair (e.g. 'BTC/USDT')
-            timeframe: '1m', '5m', '1h', etc.
-            limit: Number of bars to fetch
-
-        Returns:
-            DataFrame with columns: timestamp, open, high, low, close, volume
-        """
         try:
             ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
             df = pd.DataFrame(
@@ -65,7 +46,6 @@ class CCXTConnector:
             raise
 
     def fetch_ticker(self, symbol: str = "BTC/USDT") -> Dict:
-        """Fetch current bid/ask/price."""
         try:
             ticker = self.exchange.fetch_ticker(symbol)
             return {
@@ -81,7 +61,6 @@ class CCXTConnector:
             raise
 
     def fetch_funding_rate(self, symbol: str = "BTC/USDT") -> Optional[float]:
-        """Fetch current funding rate (futures only)."""
         try:
             if hasattr(self.exchange, 'fetch_funding_rate'):
                 fr = self.exchange.fetch_funding_rate(symbol)
@@ -91,10 +70,7 @@ class CCXTConnector:
         return None
 
     def save_ohlcv_local(self, df: pd.DataFrame, symbol: str, data_dir: str = "data/raw"):
-        """Save OHLCV to local Parquet (date-partitioned)."""
         Path(data_dir).mkdir(parents=True, exist_ok=True)
-
-        # Partition by date
         df['date'] = df['timestamp'].dt.date
         for date, group in df.groupby('date'):
             path = f"{data_dir}/{symbol.replace('/', '_')}_{date}.parquet"
@@ -102,7 +78,6 @@ class CCXTConnector:
             logger.info(f"Saved {len(group)} rows to {path}")
 
     def load_ohlcv_local(self, symbol: str, date_range: Tuple, data_dir: str = "data/raw") -> pd.DataFrame:
-        """Load OHLCV from local Parquet files."""
         symbol_str = symbol.replace('/', '_')
         files = sorted(Path(data_dir).glob(f"{symbol_str}_*.parquet"))
 

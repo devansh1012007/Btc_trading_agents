@@ -1,35 +1,8 @@
 """
-Regime Detection Layer (Phase 2, Module B / §7).
-
-Produces a RegimeState per bar: a probability vector over
-{trending_up, trending_down, chop_range, panic_spike} plus a primary_regime
-label, confidence, age, and persistence score.
-
-Two model layers combine here:
-  1. A 3-state Gaussian HMM (trending_up / trending_down / chop_range),
-     filtered forward-only (never smoothed) at serving time (§7.2, §7.4).
-  2. A fast, non-HMM panic-spike override rule (§7.3), since PANIC_SPIKE is
-     a rare, high-variance tail event the HMM should not try to carve its
-     own state out of (Baum-Welch would be unstable trying to fit a
-     covariance to so few samples), and needs lower latency than HMM
-     filtering can provide.
-
-A LightGBM classifier (§7.5), trained offline against smoothed HMM+panic
-labels, is the preferred serving path once trained; RegimeDetector falls
-back to raw HMM filtering, then to a simple volatility-threshold rule, if
-model files are absent -- the same defensive layering used elsewhere in
-the codebase (e.g. MarketDataLayer's ticker fallback).
-
-CRITICAL (§7.6): only *filtering* (forward-only, causal) is ever used in
-this serving path. *Smoothing* (whole-sequence decoding) is legitimate
-only when generating offline training labels -- see
-scripts/train_regime_models.py.
-
-Note: this module has NO hard dependency on hmmlearn or lightgbm. Trained
-model parameters are stored as plain arrays / duck-typed objects in the
-pickled payloads, so RegimeDetector can run (falling back through the
-chain) even in an environment where those libraries aren't installed at
-all -- only the training scripts need them.
+Regime Detection Layer (Phase 2, §7). 3-state Gaussian HMM (forward-filtered
+only), fast panic-spike override, LightGBM distillation classifier,
+fallback chain LightGBM -> HMM filter -> rule-based. Phase 3 adds a
+data_granularity guard (§4.7) on both model loads.
 """
 import logging
 import pickle
@@ -44,51 +17,29 @@ from ..utils.rolling_buffer import RollingBarBuffer
 
 logger = logging.getLogger(__name__)
 
-# Order used consistently everywhere a "3-state" HMM array is indexed.
 HMM_STATE_LABELS = ["trending_up", "trending_down", "chop_range"]
-
-# §7.1 observation feature set: small, Gaussian-friendly, HMM-only.
 HMM_OBSERVATION_FEATURES = [
     "momentum_5m", "momentum_10m", "volatility_5m", "volatility_10m", "volume_zscore",
 ]
 
 
 def panic_score(volatility_z: float, momentum_z: float, volume_z: float, z_threshold: float = 3.0) -> float:
-    """
-    Smooth 0-1 panic score via a sigmoid over a composite z-score, so
-    prob_panic_spike doesn't discontinuously jump across the threshold
-    (§7.3).
-    """
     composite = max(volatility_z, abs(momentum_z), volume_z)
     return float(1.0 / (1.0 + np.exp(-(composite - z_threshold))))
 
 
 @dataclass
 class HMMStateMapping:
-    """
-    Maps a fitted HMM's raw hidden-state indices to semantic labels. This
-    mapping is fit-specific (state 0 isn't always "trending_up") and must
-    be re-derived every time the model is retrained -- see
-    scripts/train_regime_models.py.
-    """
     state_to_label: Dict[int, str]
 
     def label_order_indices(self) -> List[int]:
-        """Return hidden-state indices ordered to match HMM_STATE_LABELS."""
         label_to_state = {v: k for k, v in self.state_to_label.items()}
         return [label_to_state[label] for label in HMM_STATE_LABELS]
 
 
 class _ManualGaussianHMMFilter:
-    """
-    Self-contained forward-only (causal) Gaussian HMM filter, implemented
-    with plain numpy from a fitted model's raw parameters (startprob_,
-    transmat_, means_, covars_) rather than depending on hmmlearn's
-    internal filtering API at serving time. This decouples serving from
-    any particular hmmlearn version and means RegimeDetector has zero hard
-    dependency on hmmlearn being installed (only train_regime_models.py
-    needs it, to produce these arrays in the first place).
-    """
+    """Self-contained forward-only Gaussian HMM filter (numpy only, no
+    hmmlearn dependency at serving time)."""
 
     def __init__(self, startprob: np.ndarray, transmat: np.ndarray, means: np.ndarray, covars: np.ndarray):
         self.startprob = np.asarray(startprob, dtype=float)
@@ -104,16 +55,10 @@ class _ManualGaussianHMMFilter:
         logp = np.zeros(self.n_components)
         for i in range(self.n_components):
             diff = obs - self.means[i]
-            logp[i] = -0.5 * (
-                self.k * np.log(2 * np.pi) + self._logdet[i] + diff @ self._cov_inv[i] @ diff
-            )
+            logp[i] = -0.5 * (self.k * np.log(2 * np.pi) + self._logdet[i] + diff @ self._cov_inv[i] @ diff)
         return logp
 
     def filter_step(self, obs: np.ndarray, prev_alpha: Optional[np.ndarray]) -> np.ndarray:
-        """
-        One step of the forward algorithm, using only obs up to and
-        including the current bar -- filtering, never smoothing (§7.6).
-        """
         log_emission = self._log_emission(obs)
         emission = np.exp(log_emission - np.max(log_emission))
 
@@ -141,20 +86,14 @@ class RegimeDetector:
         panic_z_threshold: float = 3.0,
         observation_lookback_bars: int = 100,
         serving_source: str = "auto",
+        data_granularity: str = "1m",
     ):
-        """
-        Args:
-            serving_source: "auto" (prefer classifier > hmm > rule),
-                "lgbm_classifier", "hmm_filter", or "rule_based" to force
-                a specific path. Regardless of the requested source, this
-                always falls back through the chain if the requested
-                model isn't actually loaded.
-        """
         self.confidence_floor = confidence_floor
         self.persistence_window_bars = persistence_window_bars
         self.persistence_transition_threshold = persistence_transition_threshold
         self.panic_z_threshold = panic_z_threshold
         self.serving_source = serving_source
+        self.data_granularity = data_granularity
 
         self._obs_buffer = RollingBarBuffer(maxlen=observation_lookback_bars)
 
@@ -170,9 +109,15 @@ class RegimeDetector:
         self._regime_age = 0
         self._recent_raw_history: List[str] = []
 
-    # ------------------------------------------------------------------
-    # Model loading
-    # ------------------------------------------------------------------
+    def _granularity_mismatch(self, payload: dict, model_label: str, path: Path) -> bool:
+        trained_granularity = payload.get("granularity")
+        if trained_granularity is not None and trained_granularity != self.data_granularity:
+            logger.warning(
+                f"{model_label} at {path} trained on granularity={trained_granularity}, "
+                f"running on {self.data_granularity}. Treating as absent (Phase 3 §4.7)."
+            )
+            return True
+        return False
 
     def _load_models(self, hmm_model_path: str, classifier_model_path: str) -> None:
         hmm_path = Path(hmm_model_path)
@@ -180,45 +125,33 @@ class RegimeDetector:
             try:
                 with open(hmm_path, "rb") as f:
                     payload = pickle.load(f)
-                self._hmm_filter = _ManualGaussianHMMFilter(
-                    startprob=payload["startprob"],
-                    transmat=payload["transmat"],
-                    means=payload["means"],
-                    covars=payload["covars"],
-                )
-                self._hmm_mapping = HMMStateMapping(state_to_label=payload["state_to_label"])
-                logger.info(f"Loaded regime HMM from {hmm_path}")
+                if not self._granularity_mismatch(payload, "Regime HMM", hmm_path):
+                    self._hmm_filter = _ManualGaussianHMMFilter(
+                        startprob=payload["startprob"], transmat=payload["transmat"],
+                        means=payload["means"], covars=payload["covars"],
+                    )
+                    self._hmm_mapping = HMMStateMapping(state_to_label=payload["state_to_label"])
+                    logger.info(f"Loaded regime HMM from {hmm_path}")
             except Exception as e:
                 logger.warning(f"Failed to load HMM model at {hmm_path}: {e}")
         else:
-            logger.info(
-                f"No HMM model found at {hmm_path}; regime detection will use the "
-                "rule-based fallback until trained"
-            )
+            logger.info(f"No HMM model found at {hmm_path}; regime detection will use the rule-based fallback until trained")
 
         clf_path = Path(classifier_model_path)
         if clf_path.exists():
             try:
                 with open(clf_path, "rb") as f:
                     payload = pickle.load(f)
-                self._classifier = payload["model"]
-                self._classifier_feature_names = payload["feature_names"]
-                logger.info(f"Loaded regime classifier from {clf_path}")
+                if not self._granularity_mismatch(payload, "Regime classifier", clf_path):
+                    self._classifier = payload["model"]
+                    self._classifier_feature_names = payload["feature_names"]
+                    logger.info(f"Loaded regime classifier from {clf_path}")
             except Exception as e:
                 logger.warning(f"Failed to load regime classifier at {clf_path}: {e}")
         else:
             logger.info(f"No regime classifier found at {clf_path}; falling back to HMM/rule-based")
 
-    # ------------------------------------------------------------------
-    # §7.1 Observation feature set
-    # ------------------------------------------------------------------
-
     def add_bar(self, feature_vector: FeatureVector) -> None:
-        """
-        Feed one bar's FeatureVector in. Builds the small HMM observation
-        vector from fields FeatureEngine already computes -- reusing its
-        output directly rather than a second parallel feature pipeline.
-        """
         raw = feature_vector.raw_features or {}
         self._obs_buffer.append({
             "timestamp": feature_vector.timestamp,
@@ -241,18 +174,7 @@ class RegimeDetector:
         order = self._hmm_mapping.label_order_indices()
         return np.array([hidden_state_probs[i] for i in order])
 
-    # ------------------------------------------------------------------
-    # §7.4 Combination into RegimeState
-    # ------------------------------------------------------------------
-
     def compute_regime(self, feature_vector: FeatureVector, symbol: str = "BTC/USDT") -> RegimeState:
-        """
-        Compute this bar's RegimeState. Serving preference order (unless
-        serving_source forces a specific path):
-          1. LightGBM classifier, if trained and loaded.
-          2. Raw HMM filtering + panic override, if the HMM is trained.
-          3. Simple volatility-threshold rule (always available).
-        """
         if self.serving_source == "lgbm_classifier" and self._classifier is not None:
             probs = self._classify_with_lgbm(feature_vector)
         elif self.serving_source == "hmm_filter" and self._hmm_filter is not None:
@@ -308,18 +230,11 @@ class RegimeDetector:
         final = final / total if total > 0 else np.array([0.25, 0.25, 0.25, 0.25])
 
         return {
-            "trending_up": float(final[0]),
-            "trending_down": float(final[1]),
-            "chop_range": float(final[2]),
-            "panic_spike": float(final[3]),
+            "trending_up": float(final[0]), "trending_down": float(final[1]),
+            "chop_range": float(final[2]), "panic_spike": float(final[3]),
         }
 
     def _classify_with_rule(self, feature_vector: FeatureVector) -> Dict[str, float]:
-        """
-        Simple volatility-threshold fallback, always available with zero
-        trained model dependencies. Coarse, but keeps the pipeline running
-        end-to-end before any model has been trained.
-        """
         p_panic = panic_score(
             volatility_z=self._zscore(feature_vector.volatility_30s, "volatility_30s"),
             momentum_z=self._zscore(feature_vector.momentum_30s, "momentum_30s"),
@@ -341,7 +256,6 @@ class RegimeDetector:
         return {k: v / total for k, v in final.items()}
 
     def _zscore(self, value: float, field_name: str) -> float:
-        """Rolling z-score of a scalar feature against its own recent history."""
         if len(self._obs_buffer) < 5:
             return 0.0
         history = np.array([b.get(field_name, 0.0) or 0.0 for b in self._obs_buffer])
@@ -370,10 +284,6 @@ class RegimeDetector:
         if len(self._recent_raw_history) > self.persistence_window_bars:
             self._recent_raw_history.pop(0)
 
-        # Anti-flicker (§7.4): a display-level regime change only "counts"
-        # (resets age) once persistence on the *candidate* new regime
-        # clears the transition threshold -- otherwise a single noisy bar
-        # could whipsaw the reported label back and forth.
         if raw_regime != self._current_primary:
             candidate_persistence = (
                 self._recent_raw_history.count(raw_regime.value) / len(self._recent_raw_history)
@@ -391,8 +301,7 @@ class RegimeDetector:
         )
 
         return RegimeState(
-            timestamp=timestamp,
-            symbol=symbol,
+            timestamp=timestamp, symbol=symbol,
             prob_trending_up=probs.get("trending_up", 0.0),
             prob_trending_down=probs.get("trending_down", 0.0),
             prob_chop_range=probs.get("chop_range", 0.0),

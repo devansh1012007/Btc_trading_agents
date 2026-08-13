@@ -276,6 +276,23 @@ class ExpertOutputs:
         new_outputs[expert_output.expert_name] = expert_output
         return ExpertOutputs(self.timestamp, self.symbol, new_outputs)
 
+    def all(self) -> List[ExpertOutput]:
+        """All expert outputs, in insertion order (Phase 3)."""
+        return list(self.outputs.values())
+
+    def get_by_name(self, expert_name: str) -> Optional[ExpertOutput]:
+        """Look up one expert's output by name, or None if absent (Phase 3)."""
+        return self.outputs.get(expert_name)
+
+    def get_best_by_confidence(self) -> Optional[ExpertOutput]:
+        """The single highest-confidence output, or None if there are no
+        experts at all (Phase 3). A NO_TRADE-only set still returns the
+        least-unconfident one -- callers that care should also check
+        `.action`."""
+        if not self.outputs:
+            return None
+        return max(self.outputs.values(), key=lambda o: o.confidence)
+
     def get_consensus_action(self) -> ExpertAction:
         """What do experts agree on?"""
         if not self.outputs:
@@ -313,6 +330,12 @@ class OpportunityScore:
     # Reasoning (for debugging)
     failed_rules: List[str] = field(default_factory=list)  # which hard rules rejected this
     edge_vs_fees: float = 0.0  # expected_edge - (fees + slippage)
+
+    # Breakdown for analysis (Phase 3, §7.3)
+    liquidity_score: float = 0.0
+    volatility_score: float = 0.0
+    expert_consensus_score: float = 0.0
+    regime_acceptability: float = 0.0
 
 
 # ============================================================================

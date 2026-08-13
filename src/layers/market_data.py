@@ -22,26 +22,12 @@ class MarketDataLayer:
         ohlcv_row: Dict[str, float],
         ticker_data: Optional[Dict] = None,
     ) -> MarketSnapshot:
-        """
-        Create MarketSnapshot from a single bar + ticker.
-
-        Args:
-            symbol: Trading pair
-            timestamp_unix: Unix timestamp (seconds)
-            ohlcv_row: dict with 'open', 'high', 'low', 'close', 'volume'
-            ticker_data: dict with 'bid', 'ask', 'bid_volume', 'ask_volume' (optional)
-
-        Returns:
-            MarketSnapshot object
-        """
-        # Unpack OHLCV
         open_price = ohlcv_row.get('open', 0.0)
         high_price = ohlcv_row.get('high', 0.0)
         low_price = ohlcv_row.get('low', 0.0)
         close_price = ohlcv_row.get('close', 0.0)
         volume = ohlcv_row.get('volume', 0.0)
 
-        # Bid/ask (use close if no ticker)
         if ticker_data:
             bid = ticker_data.get('bid', close_price)
             ask = ticker_data.get('ask', close_price)
@@ -54,14 +40,12 @@ class MarketDataLayer:
             bid_vol = 0.0
             ask_vol = 0.0
 
-        # Calculate spread
         mid_price = (bid + ask) / 2
         spread_pct = ((ask - bid) / mid_price * 100) if mid_price != 0 else 0.0
 
-        # Session info
         dt = datetime.utcfromtimestamp(timestamp_unix)
         hour_utc = dt.hour
-        day_of_week = dt.weekday()  # 0=Monday, 6=Sunday
+        day_of_week = dt.weekday()
 
         snapshot = MarketSnapshot(
             timestamp=timestamp_unix,
@@ -88,26 +72,14 @@ class MarketDataLayer:
         df: pd.DataFrame,
         symbol: str,
     ) -> list:
-        """
-        Create MarketSnapshots from a DataFrame.
-
-        Args:
-            df: DataFrame with 'timestamp', 'open', 'high', 'low', 'close', 'volume'
-            symbol: Trading pair
-
-        Returns:
-            List of MarketSnapshot objects
-        """
         snapshots = []
 
         for _, row in df.iterrows():
-            # Convert timestamp
             if isinstance(row['timestamp'], pd.Timestamp):
                 ts = int(row['timestamp'].timestamp())
             else:
                 ts = int(row['timestamp'])
 
-            # Create snapshot
             ohlcv = {
                 'open': row['open'],
                 'high': row['high'],

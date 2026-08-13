@@ -1,23 +1,7 @@
 """
-Build the zone-survival training set (§6.5).
-
-Replays historical bars through the Phase 2 perception stack (FeatureEngine
--> RegimeDetector -> DynamicStructureEngine), collects every touch event the
-structure engine records, and for each one looks forward up to
-`zone_label_horizon_bars` (or until that zone's next interaction, whichever
-comes first) to decide the label:
-
-    label = 1  if the next resolution is a rejection
-    label = 0  if the next resolution is a breakout
-    dropped    if neither happens within the horizon (censored)
-
-Deliberately runs the structure engine WITHOUT a zone-survival model
-loaded (blend weight is meaningless here) -- otherwise a partially-trained
-model would leak into its own training labels.
-
-Usage:
-    python scripts/label_zone_events.py --input data/raw/BTC_USDT_2026-01-01.parquet \\
-        --output data/processed/zone_labels.parquet
+Build the zone-survival training set (Phase 2, §6.5). Replays historical
+bars through FeatureEngine -> RegimeDetector -> DynamicStructureEngine,
+collects touch events, and labels each via forward-looking horizon.
 """
 import argparse
 import logging
@@ -45,18 +29,12 @@ def load_config(path: str = "config/settings.yaml") -> dict:
         return yaml.safe_load(f) or {}
 
 
-def replay_and_collect_touch_events(
-    df_ohlcv: pd.DataFrame,
-    symbol: str,
-    config: dict,
-) -> List[Dict]:
-    """Replay bars in order through the perception stack, bar by bar
-    (causal, no look-ahead), and return the structure engine's full
-    touch-event log."""
+def replay_and_collect_touch_events(df_ohlcv: pd.DataFrame, symbol: str, config: dict) -> List[Dict]:
     struct_cfg = config.get("structure", {})
     regime_cfg = config.get("regime", {})
     models_cfg = config.get("models", {})
     data_cfg = config.get("data", {})
+    data_granularity = config.get("system", {}).get("data_granularity", "1m")
 
     feature_engine = FeatureEngine(lookback_bars=data_cfg.get("lookback_bars", 100))
     regime_detector = RegimeDetector(
@@ -66,6 +44,7 @@ def replay_and_collect_touch_events(
         persistence_window_bars=regime_cfg.get("persistence_window_bars", 20),
         persistence_transition_threshold=regime_cfg.get("persistence_transition_threshold", 0.6),
         panic_z_threshold=regime_cfg.get("panic_z_threshold", 3.0),
+        data_granularity=data_granularity,
     )
     structure_engine = DynamicStructureEngine(
         lookback_bars=struct_cfg.get("lookback_bars", 50),
@@ -73,8 +52,7 @@ def replay_and_collect_touch_events(
         min_zone_separation_pct=struct_cfg.get("min_zone_separation_pct", 1.0),
         zone_decay_bars=struct_cfg.get("zone_decay_bars", 100),
         breakout_survival_penalty=struct_cfg.get("breakout_survival_penalty", 0.3),
-        # No zone_survival_model_path here on purpose -- labeling must run
-        # against the pure rule-based engine (see module docstring).
+        data_granularity=data_granularity,
     )
 
     snapshots = MarketDataLayer.batch_create_from_dataframe(df_ohlcv, symbol)
@@ -84,29 +62,16 @@ def replay_and_collect_touch_events(
         fv = feature_engine.compute_features(snapshot)
         if fv is None:
             continue
-
         regime_detector.add_bar(fv)
         regime_state = regime_detector.compute_regime(fv, symbol=symbol)
-
         structure_engine.add_bar(snapshot)
-        structure_engine.compute_zones(
-            current_price=snapshot.close,
-            symbol=symbol,
-            regime_state=regime_state,
-        )
+        structure_engine.compute_zones(current_price=snapshot.close, symbol=symbol, regime_state=regime_state)
 
     logger.info(f"Replayed {len(snapshots)} bars, collected {len(structure_engine.touch_events)} touch events")
     return structure_engine.touch_events
 
 
 def label_touch_events(touch_events: List[Dict], horizon_bars: int) -> pd.DataFrame:
-    """
-    For every touch event, look forward (within touch_events, already in
-    causal/bar order) up to horizon_bars for the SAME zone_id's next
-    event, and derive the label.
-    """
-    # Group event indices by zone_id up front so "next event for this
-    # zone" is an O(1) lookup instead of an O(n) scan per event.
     events_by_zone: Dict[str, List[int]] = {}
     for idx, ev in enumerate(touch_events):
         events_by_zone.setdefault(ev["zone_id"], []).append(idx)
@@ -126,7 +91,7 @@ def label_touch_events(touch_events: List[Dict], horizon_bars: int) -> pd.DataFr
                 label = 1 if next_event["event_type"] == "rejection" else 0
 
         if label is None:
-            continue  # censored: no resolution within the horizon -> drop
+            continue
 
         row = dict(ev["features"])
         row["zone_id"] = zone_id
@@ -142,7 +107,7 @@ def label_touch_events(touch_events: List[Dict], horizon_bars: int) -> pd.DataFr
 
 def main():
     parser = argparse.ArgumentParser(description="Label zone touch events for the zone-survival model")
-    parser.add_argument("--input", required=True, help="Path to a Parquet/CSV of historical OHLCV bars")
+    parser.add_argument("--input", required=True)
     parser.add_argument("--output", default="data/processed/zone_labels.parquet")
     parser.add_argument("--symbol", default="BTC/USDT")
     parser.add_argument("--config", default="config/settings.yaml")
@@ -152,11 +117,7 @@ def main():
     horizon_bars = config.get("structure", {}).get("zone_label_horizon_bars", 20)
 
     input_path = Path(args.input)
-    if input_path.suffix == ".csv":
-        df_ohlcv = pd.read_csv(input_path)
-    else:
-        df_ohlcv = pd.read_parquet(input_path)
-
+    df_ohlcv = pd.read_csv(input_path) if input_path.suffix == ".csv" else pd.read_parquet(input_path)
     if "timestamp" in df_ohlcv.columns:
         df_ohlcv["timestamp"] = pd.to_datetime(df_ohlcv["timestamp"])
     df_ohlcv = df_ohlcv.sort_values("timestamp").reset_index(drop=True)
@@ -166,10 +127,8 @@ def main():
 
     n_rejections = int((labeled_df['label'] == 1).sum()) if len(labeled_df) else 0
     n_breakouts = int((labeled_df['label'] == 0).sum()) if len(labeled_df) else 0
-    logger.info(
-        f"Labeled {len(labeled_df)} samples ({n_rejections} rejections, {n_breakouts} breakouts), "
-        f"{len(touch_events) - len(labeled_df)} censored/dropped"
-    )
+    logger.info(f"Labeled {len(labeled_df)} samples ({n_rejections} rejections, {n_breakouts} breakouts), "
+                f"{len(touch_events) - len(labeled_df)} censored/dropped")
 
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     labeled_df.to_parquet(args.output, compression="snappy")

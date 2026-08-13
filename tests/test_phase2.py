@@ -1,11 +1,6 @@
 """
-Phase 2 test suite (§10).
-
-Covers the Dynamic Structure Engine completion (zone touch/breakout
-classification, no-look-ahead, idempotency, structural feature wiring),
-the Regime Detection Layer (probability normalization, causal filtering,
-model-absent fallback, panic-score smoothness), and the shared
-walk-forward splitter's embargo guarantee.
+Phase 2 test suite (§10 of the Phase 2 plan). Covers the Dynamic Structure
+Engine completion and the Regime Detection Layer.
 """
 import numpy as np
 import pytest
@@ -17,41 +12,26 @@ from src.layers.regime_detector import RegimeDetector, panic_score
 from src.backtest.walk_forward import WalkForwardSplitter
 
 
-# --------------------------------------------------------------------
-# Helpers
-# --------------------------------------------------------------------
-
 def make_snapshot(timestamp, open_, high, low, close, volume=100.0, symbol="BTC/USDT"):
     return MarketSnapshot(
-        timestamp=timestamp,
-        symbol=symbol,
-        open=open_, high=high, low=low, close=close, volume=volume,
-        bid=close * 0.9995, ask=close * 1.0005,
-        bid_volume=50.0, ask_volume=50.0,
-        spread_pct=0.01,
-        hour_utc=12, day_of_week=2,
+        timestamp=timestamp, symbol=symbol, open=open_, high=high, low=low, close=close, volume=volume,
+        bid=close * 0.9995, ask=close * 1.0005, bid_volume=50.0, ask_volume=50.0,
+        spread_pct=0.01, hour_utc=12, day_of_week=2,
     )
 
 
-def make_feature_vector(timestamp, momentum_5m=0.0, momentum_10m=0.0,
-                         volatility_5m=0.1, volatility_10m=0.1,
-                         volatility_30s=0.05, momentum_30s=0.0,
-                         volume_zscore=0.0, symbol="BTC/USDT"):
+def make_feature_vector(timestamp, momentum_5m=0.0, momentum_10m=0.0, volatility_5m=0.1, volatility_10m=0.1,
+                         volatility_30s=0.05, momentum_30s=0.0, volume_zscore=0.0, symbol="BTC/USDT"):
     return FeatureVector(
-        timestamp=timestamp, symbol=symbol,
-        momentum_30s=momentum_30s, momentum_5m=momentum_5m,
-        volatility_30s=volatility_30s, volatility_5m=volatility_5m,
-        returns_5=0.0, rsi_14=50.0, macd_signal=0.0,
-        sma_9=100.0, sma_21=100.0,
-        momentum_10m=momentum_10m, volatility_10m=volatility_10m,
-        imbalance_ratio=0.5, orderflow_momentum=0.0,
-        spread_pct=0.01, depth_10_level=100.0,
+        timestamp=timestamp, symbol=symbol, momentum_30s=momentum_30s, momentum_5m=momentum_5m,
+        volatility_30s=volatility_30s, volatility_5m=volatility_5m, returns_5=0.0, rsi_14=50.0, macd_signal=0.0,
+        sma_9=100.0, sma_21=100.0, momentum_10m=momentum_10m, volatility_10m=volatility_10m,
+        imbalance_ratio=0.5, orderflow_momentum=0.0, spread_pct=0.01, depth_10_level=100.0,
         raw_features={"volume_zscore": volume_zscore},
     )
 
 
 def _build_pivot_high(engine, base_price=100.0, pivot_offset=2.0):
-    """Feed bars so a single pivot-high (resistance) zone gets created."""
     w = engine.pivot_window
     t = 0
     for i in range(w):
@@ -63,10 +43,8 @@ def _build_pivot_high(engine, base_price=100.0, pivot_offset=2.0):
     engine.add_bar(make_snapshot(t, pivot_price, pivot_price + 0.5, pivot_price - 0.1, pivot_price))
     t += 1
 
-    last_price = base_price
     for i in range(w):
         price = base_price + pivot_offset - (i + 1)
-        last_price = price
         engine.add_bar(make_snapshot(t, price, price + 0.1, price - 0.1, price))
         engine.compute_zones(current_price=price)
         t += 1
@@ -74,13 +52,7 @@ def _build_pivot_high(engine, base_price=100.0, pivot_offset=2.0):
     return t, pivot_price
 
 
-# --------------------------------------------------------------------
-# Dynamic Structure Engine
-# --------------------------------------------------------------------
-
 def test_zone_touch_classification():
-    """A price approach that bounces off a zone should increment
-    rejection_count, not breakout_count."""
     engine = DynamicStructureEngine(lookback_bars=50, pivot_window=3, zone_decay_bars=1000)
     t, _ = _build_pivot_high(engine)
 
@@ -89,8 +61,7 @@ def test_zone_touch_classification():
     zone_before = engine.zones[zone_id]
     assert zone_before.rejection_count == 0 and zone_before.breakout_count == 0
 
-    upper = zone_before.upper_bound
-    lower = zone_before.lower_bound
+    upper, lower = zone_before.upper_bound, zone_before.lower_bound
     approach_price = (upper + lower) / 2
 
     engine.add_bar(make_snapshot(t, approach_price, upper + 0.01, approach_price - 0.2, upper - 0.02))
@@ -102,16 +73,13 @@ def test_zone_touch_classification():
 
 
 def test_zone_breakout_classification():
-    """A close through a zone's upper bound should increment breakout_count
-    and drop survival_probability sharply."""
     engine = DynamicStructureEngine(lookback_bars=50, pivot_window=3, zone_decay_bars=1000)
     t, _ = _build_pivot_high(engine)
 
     zone_id = next(iter(engine.zones))
     zone_before = engine.zones[zone_id]
     survival_before = zone_before.survival_probability
-    upper = zone_before.upper_bound
-    lower = zone_before.lower_bound
+    upper, lower = zone_before.upper_bound, zone_before.lower_bound
 
     breakout_close = upper + 1.0
     engine.add_bar(make_snapshot(t, lower, breakout_close + 0.2, lower - 0.1, breakout_close))
@@ -123,10 +91,7 @@ def test_zone_breakout_classification():
 
 
 def test_zone_no_lookahead():
-    """A zone must never appear in compute_zones()'s output for a bar
-    before its confirmed_at_bar."""
     engine = DynamicStructureEngine(lookback_bars=50, pivot_window=3, zone_decay_bars=1000)
-
     t = 0
     prices = [100, 101, 102, 105, 104, 103, 102, 101, 100, 99, 100, 101]
     for price in prices:
@@ -140,8 +105,6 @@ def test_zone_no_lookahead():
 
 
 def test_zone_idempotent_add_bar():
-    """Calling compute_zones repeatedly on the same underlying data
-    shouldn't duplicate or double-count a zone."""
     engine = DynamicStructureEngine(lookback_bars=50, pivot_window=3, zone_decay_bars=1000)
     _build_pivot_high(engine)
 
@@ -154,8 +117,6 @@ def test_zone_idempotent_add_bar():
 
 
 def test_structural_features_populated():
-    """FeatureVector's structural fields become non-None once a ZoneMap
-    with at least one zone exists."""
     engine = DynamicStructureEngine(lookback_bars=50, pivot_window=3, zone_decay_bars=1000)
     t, pivot_price = _build_pivot_high(engine)
     zone_map = engine.compute_zones(current_price=pivot_price - 1.0)
@@ -168,26 +129,17 @@ def test_structural_features_populated():
     assert merged.resistance_strength is not None
 
 
-# --------------------------------------------------------------------
-# Regime Detection Layer
-# --------------------------------------------------------------------
-
 def test_regime_state_probabilities_sum_to_one():
     detector = RegimeDetector(hmm_model_path="nonexistent.pkl", classifier_model_path="nonexistent2.pkl")
     fv = make_feature_vector(timestamp=0, momentum_5m=0.2)
     detector.add_bar(fv)
     state = detector.compute_regime(fv)
 
-    total = (
-        state.prob_trending_up + state.prob_trending_down
-        + state.prob_chop_range + state.prob_panic_spike
-    )
+    total = state.prob_trending_up + state.prob_trending_down + state.prob_chop_range + state.prob_panic_spike
     assert abs(total - 1.0) < 1e-6
 
 
 def test_regime_filtering_is_causal():
-    """Output for bar N must be identical whether or not bars N+1..N+k
-    exist -- i.e. no smoothing/look-ahead in the serving path."""
     np.random.seed(0)
     momentums = np.random.normal(0, 0.1, 30)
     n_cutoff = 15
@@ -216,7 +168,6 @@ def test_regime_filtering_is_causal():
 
 
 def test_regime_fallback_without_model_file():
-    """RegimeDetector degrades gracefully (rule-based) if .pkl files are absent."""
     detector = RegimeDetector(
         hmm_model_path="data/models/does_not_exist_hmm.pkl",
         classifier_model_path="data/models/does_not_exist_clf.pkl",
@@ -230,7 +181,6 @@ def test_regime_fallback_without_model_file():
 
 
 def test_panic_override_smooth():
-    """panic_score should be continuous (no discontinuous jump) across the threshold."""
     threshold = 3.0
     xs = np.linspace(threshold - 1.0, threshold + 1.0, 200)
     scores = [panic_score(x, 0.0, 0.0, z_threshold=threshold) for x in xs]
@@ -240,13 +190,7 @@ def test_panic_override_smooth():
     assert scores[0] < 0.5 < scores[-1]
 
 
-# --------------------------------------------------------------------
-# Walk-forward splitter
-# --------------------------------------------------------------------
-
 def test_walk_forward_embargo():
-    """No index from a test fold should appear within embargo_bars of any
-    train-fold index."""
     splitter = WalkForwardSplitter(train_bars=100, test_bars=20, step_bars=20, embargo_bars=10)
     n_samples = 500
 

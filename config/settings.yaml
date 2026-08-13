@@ -1,20 +1,26 @@
-# Trading System Configuration
-
-# Exchange
-exchange:
-  name: "binance"
+###############################################################################
+# SYSTEM CONFIGURATION (Phase 3 §4)
+###############################################################################
+system:
+  data_granularity: "1m"                # "10s", "30s", "1m", "5m" -- config only, no code change to switch
+  exchange: "binance"
   sandbox: true
   symbol: "BTC/USDT"
-  timeframe: "1m"
 
-# Data
+###############################################################################
+# DATA SOURCES & STORAGE
+###############################################################################
 data:
   raw_dir: "data/raw"
   processed_dir: "data/processed"
   logs_dir: "data/logs"
   lookback_bars: 100
 
-# Feature Engine
+###############################################################################
+# FEATURE ENGINE (Phase 1/2 -- unchanged; period constants stay in
+# feature_engine.py itself, out of Phase 3's scope. See PHASE3_COMPLETE.md
+# "Deliberate Design Decisions" for why this wasn't retrofitted.)
+###############################################################################
 features:
   momentum_periods: [1, 5, 10]
   volatility_periods: [1, 5, 10]
@@ -22,13 +28,17 @@ features:
   sma_periods: [9, 21]
   volume_zscore_period: 20
 
-# Market thresholds
+###############################################################################
+# MARKET THRESHOLDS (Phase 1, carried forward)
+###############################################################################
 market:
   min_spread_pct: 0.01
   max_spread_pct: 0.5
   min_depth_usdt: 10000
 
-# Dynamic Structure Engine (Phase 2, Module A -- §6, §8)
+###############################################################################
+# DYNAMIC STRUCTURE ENGINE (Phase 2, Module A -- §6)
+###############################################################################
 structure:
   lookback_bars: 50
   pivot_window: 5
@@ -37,7 +47,9 @@ structure:
   zone_label_horizon_bars: 20
   breakout_survival_penalty: 0.3
 
-# Regime Detection Layer (Phase 2, Module B -- §7, §8)
+###############################################################################
+# REGIME DETECTION (Phase 2, Module B -- §7)
+###############################################################################
 regime:
   n_states: 3               # trending_up / trending_down / chop_range; panic handled separately
   confidence_floor: 0.35
@@ -46,23 +58,157 @@ regime:
   panic_z_threshold: 3.0
   observation_features: [momentum_5m, momentum_10m, volatility_5m, volatility_10m, volume_zscore]
 
-# Model paths
+###############################################################################
+# TRIPLE-BARRIER LABELING (Phase 3, §5)
+###############################################################################
+labeling:
+  max_holding_bars: 5                   # Trade resolves in up to 5 bars (wall-clock scales with granularity)
+  fee_pct: 0.04                         # Binance taker fee (adjust for your tier -- §15.1)
+  slippage_buffer_pct: 0.02
+  k_tp: 1.5                             # TP = 1.5 x volatility_30s
+  k_sl: 1.0                             # SL = 1.0 x volatility_30s
+
+  # Regime-specific barrier overrides (§9). Keyed by RegimeType member
+  # NAME (e.g. TRENDING_UP), matching parse_regime_list's convention.
+  regime_specific_barriers:
+    TRENDING_UP:
+      k_tp: 2.0
+      k_sl: 0.8
+    TRENDING_DOWN:
+      k_tp: 2.0
+      k_sl: 0.8
+    CHOP_RANGE:
+      k_tp: 1.0
+      k_sl: 1.0
+    PANIC_SPIKE:
+      k_tp: 0.5
+      k_sl: 0.5
+
+###############################################################################
+# EXPERT LAYER (Phase 3, §6)
+###############################################################################
+experts:
+
+  trend:
+    # Candidate gate
+    momentum_threshold: 0.05
+    momentum_period_bars: 5
+    regime_requirement: [TRENDING_UP, TRENDING_DOWN]
+    regime_confidence_floor: 0.4
+    persistence_requirement: 0.5
+
+    # Fallback (no model available, or granularity mismatch)
+    fallback_confidence: 0.6
+    fallback_expected_return: 0.08
+    fallback_expected_risk: 0.12
+
+    model_path: "data/models/experts/trend_expert.pkl"
+
+  mean_reversion:
+    # Candidate gate
+    regime_requirement: [CHOP_RANGE]
+    regime_confidence_floor: 0.35
+    zone_proximity_pct: 0.3
+    zone_strength_floor: 0.3
+    rsi_extremity_threshold: [20, 80]
+
+    # Fallback
+    fallback_confidence: 0.55
+    fallback_expected_return: 0.06
+    fallback_expected_risk: 0.10
+
+    model_path: "data/models/experts/mean_reversion_expert.pkl"
+
+  breakout:
+    # Candidate gate
+    regime_requirement: [TRENDING_UP, TRENDING_DOWN]
+    regime_confidence_floor: 0.35
+    compression_lookback_bars: 20
+    compression_pct_threshold: 10
+    # Substitutes for the plan's raw-volume-ratio gate -- see
+    # breakout_expert.py's module docstring for why.
+    volume_zscore_surge_threshold: 1.0
+    orderflow_momentum_threshold: 10
+
+    # Fallback
+    fallback_confidence: 0.50
+    fallback_expected_return: 0.10
+    fallback_expected_risk: 0.15
+
+    model_path: "data/models/experts/breakout_expert.pkl"
+
+###############################################################################
+# OPPORTUNITY FILTER (Phase 3, §7)
+###############################################################################
+opportunity_filter:
+
+  hard_rules:
+    edge_vs_fees_threshold: 0.02
+    max_spread_pct: 0.05
+    min_depth_usdt: 10000
+    volatility_floor_pct: 0.01
+    volatility_ceiling_pct: 1.5
+    reject_on_regime: [PANIC_SPIKE]
+    no_consensus_ceiling: 0.7
+    reject_if_best_confidence_below: 0.3
+
+  ml_model:
+    model_path: "data/models/opportunity_filter.pkl"
+    blend_weight: 0.3                  # 30% model, 70% hard rules -- §15.7
+
+  # Regime-specific overrides, layered on top of hard_rules above. Keyed
+  # by RegimeType member NAME.
+  regime_overrides:
+    PANIC_SPIKE:
+      edge_vs_fees_threshold: 0.05
+    TRENDING_UP:
+      volatility_ceiling_pct: 2.0
+    TRENDING_DOWN:
+      volatility_ceiling_pct: 2.0
+    CHOP_RANGE:
+      volatility_floor_pct: 0.005
+
+###############################################################################
+# ROUTER (Phase 3, §8)
+###############################################################################
+router:
+
+  model:
+    model_path: "data/models/router.pkl"
+    blend_weight: 0.2                  # 20% model, 80% expert confidence initially -- §15.8
+
+  fallback_behavior:
+    confidence_floor_to_trade: 0.3
+
+###############################################################################
+# MODEL PATHS & SERVING
+###############################################################################
 models:
+  # Zone survival (Phase 2) -- kept as `zone_model` (Phase 2's original key)
+  # rather than the Phase 3 plan's `zone_survival_model`, since Phase 2's
+  # code already reads `zone_model` throughout; renaming would silently
+  # break already-working config loading for no benefit.
   zone_model: "data/models/zone_validity_model.pkl"
+  zone_survival_blend_weight: 0.0
+
   regime_hmm: "data/models/regime_hmm.pkl"
   regime_classifier: "data/models/regime_classifier.pkl"
-  experts_dir: "data/models/experts/"
-  zone_survival_blend_weight: 0.0   # 0 = pure rule-based, 1 = pure ML; ramp up after validation
-  regime_serving_source: "auto"     # "auto" | "hmm_filter" | "lgbm_classifier" | "rule_based"
+  regime_serving_source: "auto"        # "auto" | "hmm_filter" | "lgbm_classifier" | "rule_based"
 
-# Walk-forward validation (Phase 2, shared infra -- §5.2)
+  experts_dir: "data/models/experts/"
+
+###############################################################################
+# BACKTEST & TRAINING (walk-forward, shared across every Phase 2/3 script)
+###############################################################################
 backtest:
   train_bars: 5000
-  test_bars: 1000
-  step_bars: 1000
-  embargo_bars: 30
+  test_bars: 500
+  step_bars: 100
+  embargo_bars: 50
 
-# Logging
+###############################################################################
+# LOGGING
+###############################################################################
 logging:
   level: "INFO"
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
