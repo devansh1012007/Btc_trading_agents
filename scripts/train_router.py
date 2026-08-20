@@ -32,7 +32,7 @@ from src.state.contracts import ExpertAction
 from src.backtest.walk_forward import WalkForwardSplitter
 
 
-def load_config(path="config/settings.yaml") -> dict:
+def load_config(path="config/settings.base.yaml") -> dict:
     p = Path(path)
     return (yaml.safe_load(open(p)) or {}) if p.exists() else {}
 
@@ -136,7 +136,7 @@ def main():
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", default="data/models/router.pkl")
     parser.add_argument("--symbol", default="BTC/USDT")
-    parser.add_argument("--config", default="config/settings.yaml")
+    parser.add_argument("--config", default="config/settings.base.yaml")
     args = parser.parse_args()
 
     config = load_config(args.config)

@@ -25,6 +25,7 @@ from ..layers.expert_layer import ExpertLayer
 from ..layers.opportunity_filter import OpportunityFilter
 from ..layers.router import Router
 from ..experts.expert_registry import build_experts
+from ..liquidity.synthetic_liquidity_model import attach_synthetic_liquidity
 from ..state.contracts import SystemState, MarketSnapshot
 
 
@@ -54,6 +55,7 @@ def replay_full_stack(
     router_cfg = config.get("router", {})
     labeling_cfg = config.get("labeling", {})
     system_cfg = config.get("system", {})
+    liquidity_cfg = config.get("liquidity", {}).get("synthetic", {})
     data_granularity = system_cfg.get("data_granularity", "1m")
 
     feature_engine = FeatureEngine(lookback_bars=data_cfg.get("lookback_bars", 100))
@@ -105,9 +107,23 @@ def replay_full_stack(
         regime_state = regime_detector.compute_regime(fv, symbol=symbol)
 
         structure_engine.add_bar(snapshot)
-        result.structure_snapshots.append(snapshot)
         zone_map = structure_engine.compute_zones(current_price=snapshot.close, symbol=symbol, regime_state=regime_state)
         fv = attach_structural_features(fv, zone_map)
+
+        # Phase 4 §4.2 / Finding #2 fix: historical replay has no real
+        # order-book history, so the crude MarketDataLayer fallback (zero
+        # depth, fixed spread) gets replaced here with a feature-
+        # conditioned synthetic estimate BEFORE the Opportunity Filter (or
+        # Risk Layer, downstream) reads spread_pct/bid_volume/ask_volume.
+        # structure_engine already consumed the pre-liquidity snapshot
+        # above, which is fine -- it never reads bid/ask/spread. The
+        # append below happens AFTER this so structure_snapshots and every
+        # SystemState.market_snapshot reference the identical corrected
+        # object -- forward_bars used for triple-barrier labeling only
+        # ever read high/low/close from these, but keeping them
+        # consistent avoids a future footgun.
+        snapshot = attach_synthetic_liquidity(snapshot, fv, liquidity_cfg)
+        result.structure_snapshots.append(snapshot)
 
         expert_outputs = opportunity_score = router_decision = None
         if run_experts:

@@ -1,19 +1,27 @@
 """
 Serialize/deserialize SystemState to/from Parquet, JSON.
 
-Phase 2 (§9): ZoneMap's nested zones -> one JSON-blob column
-(zone_map_json), option A from the plan.
-Phase 3: same JSON-blob treatment for expert_outputs (nested per-expert
-dict); opportunity_score and router_decision flatten into scalar columns
-since they're not nested structures.
+Phase 4 §7.1 completeness audit: prior versions of this module only
+flattened a hand-picked subset of fields per layer (confirmed against the
+full contracts.py field list -- four of FeatureVector's sixteen-plus
+fields, none of RiskDecision or ExecutionRecord at all). This version
+flattens EVERY field of every dataclass, closing that gap -- this file is
+both the production trade record and the entire future training archive
+(§10's Stage-4 data requirements), so a silently-missing field here is a
+silently-missing capability months from now.
+
+ZoneMap's nested zones and ExpertOutputs' nested per-expert dict still
+use the JSON-blob-column approach (§9 option A from Phase 2's plan) --
+they're genuinely nested, not flat records.
 """
 import json
+from dataclasses import asdict, fields
 from typing import Dict, Any, List
 import pandas as pd
 from datetime import datetime
 from .contracts import (
     SystemState, MarketSnapshot, FeatureVector, RegimeState, Zone, ZoneMap,
-    ExpertOutput, ExpertOutputs, OpportunityScore, RouterDecision,
+    ExpertOutput, ExpertOutputs, OpportunityScore, RouterDecision, RiskDecision, ExecutionRecord,
 )
 
 
@@ -86,44 +94,52 @@ def expert_outputs_from_json(expert_outputs_json: str) -> Dict[str, Dict[str, An
 
 
 def system_state_to_dict(state: SystemState) -> Dict[str, Any]:
-    """Flatten SystemState to dict (compatible with Parquet)."""
-    d = {
+    """Flatten SystemState to dict (compatible with Parquet). Every
+    scalar field of every layer is included -- see module docstring."""
+    d: Dict[str, Any] = {
         'timestamp': state.timestamp,
         'symbol': state.symbol,
     }
 
     if state.market_snapshot:
         ms = state.market_snapshot
-        d.update({
-            f'market_{k}': v for k, v in {
-                'open': ms.open, 'high': ms.high, 'low': ms.low, 'close': ms.close,
-                'volume': ms.volume, 'bid': ms.bid, 'ask': ms.ask, 'spread_pct': ms.spread_pct,
-            }.items()
-        })
+        d.update({f'market_{k}': v for k, v in {
+            'open': ms.open, 'high': ms.high, 'low': ms.low, 'close': ms.close,
+            'volume': ms.volume, 'bid': ms.bid, 'ask': ms.ask,
+            'bid_volume': ms.bid_volume, 'ask_volume': ms.ask_volume,
+            'spread_pct': ms.spread_pct, 'funding_rate': ms.funding_rate,
+            'open_interest': ms.open_interest, 'liquidation_volume': ms.liquidation_volume,
+            'hour_utc': ms.hour_utc, 'day_of_week': ms.day_of_week,
+            'liquidity_source': ms.liquidity_source,
+        }.items()})
 
     if state.feature_vector:
         fv = state.feature_vector
-        d.update({
-            f'feature_{k}': v for k, v in {
-                'momentum_30s': fv.momentum_30s, 'momentum_5m': fv.momentum_5m,
-                'volatility_30s': fv.volatility_30s, 'spread_pct': fv.spread_pct,
-                'distance_to_nearest_support': fv.distance_to_nearest_support,
-                'distance_to_nearest_resistance': fv.distance_to_nearest_resistance,
-                'support_strength': fv.support_strength,
-                'resistance_strength': fv.resistance_strength,
-            }.items()
-        })
+        d.update({f'feature_{k}': v for k, v in {
+            'momentum_30s': fv.momentum_30s, 'momentum_5m': fv.momentum_5m,
+            'momentum_10m': fv.momentum_10m, 'volatility_30s': fv.volatility_30s,
+            'volatility_5m': fv.volatility_5m, 'volatility_10m': fv.volatility_10m,
+            'returns_5': fv.returns_5, 'rsi_14': fv.rsi_14, 'macd_signal': fv.macd_signal,
+            'sma_9': fv.sma_9, 'sma_21': fv.sma_21, 'imbalance_ratio': fv.imbalance_ratio,
+            'orderflow_momentum': fv.orderflow_momentum, 'spread_pct': fv.spread_pct,
+            'depth_10_level': fv.depth_10_level,
+            'distance_to_nearest_support': fv.distance_to_nearest_support,
+            'distance_to_nearest_resistance': fv.distance_to_nearest_resistance,
+            'support_strength': fv.support_strength, 'resistance_strength': fv.resistance_strength,
+            'feature_computed_at': fv.feature_computed_at,
+            'raw_features_json': json.dumps(fv.raw_features),
+        }.items()})
 
     if state.regime_state:
         rs = state.regime_state
-        d.update({
-            f'regime_{k}': v for k, v in {
-                'primary': rs.primary_regime.value, 'confidence': rs.regime_confidence,
-                'prob_up': rs.prob_trending_up, 'prob_down': rs.prob_trending_down,
-                'prob_chop': rs.prob_chop_range, 'prob_panic': rs.prob_panic_spike,
-                'age': rs.regime_age, 'persistence_score': rs.regime_persistence_score,
-            }.items()
-        })
+        d.update({f'regime_{k}': v for k, v in {
+            'primary': rs.primary_regime.value, 'confidence': rs.regime_confidence,
+            'prob_up': rs.prob_trending_up, 'prob_down': rs.prob_trending_down,
+            'prob_chop': rs.prob_chop_range, 'prob_panic': rs.prob_panic_spike,
+            'age': rs.regime_age, 'persistence_score': rs.regime_persistence_score,
+            'hmm_hidden_state': rs.hmm_hidden_state,
+            'hmm_probabilities_json': json.dumps(rs.hmm_probabilities),
+        }.items()})
 
     if state.zone_map:
         zm = state.zone_map
@@ -141,33 +157,52 @@ def system_state_to_dict(state: SystemState) -> Dict[str, Any]:
 
     if state.opportunity_score:
         os_ = state.opportunity_score
-        d.update({
-            f'opportunity_{k}': v for k, v in {
-                'tradable': os_.tradable, 'tradable_probability': os_.tradable_probability,
-                'environment_quality': os_.environment_quality,
-                'opportunity_strength': os_.opportunity_strength,
-                'edge_vs_fees': os_.edge_vs_fees, 'liquidity_score': os_.liquidity_score,
-                'volatility_score': os_.volatility_score,
-                'expert_consensus_score': os_.expert_consensus_score,
-                'regime_acceptability': os_.regime_acceptability,
-                'failed_rules': json.dumps(os_.failed_rules),
-            }.items()
-        })
+        d.update({f'opportunity_{k}': v for k, v in {
+            'tradable': os_.tradable, 'tradable_probability': os_.tradable_probability,
+            'environment_quality': os_.environment_quality,
+            'opportunity_strength': os_.opportunity_strength,
+            'edge_vs_fees': os_.edge_vs_fees, 'liquidity_score': os_.liquidity_score,
+            'volatility_score': os_.volatility_score,
+            'expert_consensus_score': os_.expert_consensus_score,
+            'regime_acceptability': os_.regime_acceptability,
+            'failed_rules_json': json.dumps(os_.failed_rules),
+        }.items()})
 
     if state.router_decision:
         rd = state.router_decision
-        d.update({
-            f'router_{k}': v for k, v in {
-                'selected_expert': rd.selected_expert,
-                'selection_confidence': rd.selection_confidence,
-                'no_trade_probability': rd.no_trade_probability,
-                'reasoning': rd.reasoning,
-                'expert_ranking_json': json.dumps({k2: float(v2) for k2, v2 in rd.expert_ranking.items()}),
-            }.items()
-        })
+        d.update({f'router_{k}': v for k, v in {
+            'selected_expert': rd.selected_expert,
+            'selection_confidence': rd.selection_confidence,
+            'no_trade_probability': rd.no_trade_probability,
+            'reasoning': rd.reasoning,
+            'expert_ranking_json': json.dumps({k2: float(v2) for k2, v2 in rd.expert_ranking.items()}),
+        }.items()})
 
-    if state.realized_pnl is not None:
-        d['realized_pnl'] = state.realized_pnl
+    if state.risk_decision:
+        rk = state.risk_decision
+        d.update({f'risk_{k}': v for k, v in {
+            'approved': rk.approved, 'risk_score': rk.risk_score, 'base_size': rk.base_size,
+            'adjusted_size': rk.adjusted_size, 'size_reduction_pct': rk.size_reduction_pct,
+            'rejection_reason': rk.rejection_reason,
+        }.items()})
+
+    if state.execution_record:
+        er = state.execution_record
+        d.update({f'execution_{k}': v for k, v in {
+            'order_timestamp': er.order_timestamp, 'fill_timestamp': er.fill_timestamp,
+            'side': er.side, 'order_price': er.order_price, 'fill_price': er.fill_price,
+            'requested_size': er.requested_size, 'filled_size': er.filled_size,
+            'slippage_pct': er.slippage_pct, 'fees_pct': er.fees_pct,
+            'total_cost_pct': er.total_cost_pct, 'status': er.status, 'order_id': er.order_id,
+        }.items()})
+
+    # Realized PnL populated on EVERY bar, not just executed trades (§10:
+    # PPO/bandit training needs reward=0 rows for no-trade bars, not just
+    # executed-trade rows). Callers that know the outcome (e.g. run.py's
+    # loop, once a position resolves) set state.realized_pnl explicitly;
+    # bars with no trade at all default to 0.0 here rather than being
+    # left out of the archive entirely.
+    d['realized_pnl'] = state.realized_pnl if state.realized_pnl is not None else 0.0
 
     return d
 

@@ -1,0 +1,16 @@
+###############################################################################
+# LIVE environment overlay (Phase 4, §11). Merged on top of
+# settings.base.yaml by load_layered_config(env="live").
+#
+# confirm_real_money is deliberately LEFT FALSE here, even in the live
+# overlay -- per §6.4's design, mode="live" alone must never be enough to
+# place a real order. You flip confirm_real_money to true yourself,
+# explicitly, only when you've actually decided to go live. A single
+# `--env live` on the command line can never be enough by itself.
+###############################################################################
+system:
+  sandbox: false
+
+execution:
+  mode: "live"
+  confirm_real_money: false     # <-- you flip this, deliberately, not this file

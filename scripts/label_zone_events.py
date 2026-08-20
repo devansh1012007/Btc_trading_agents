@@ -21,7 +21,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def load_config(path: str = "config/settings.yaml") -> dict:
+def load_config(path: str = "config/settings.base.yaml") -> dict:
     p = Path(path)
     if not p.exists():
         return {}
@@ -110,7 +110,7 @@ def main():
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", default="data/processed/zone_labels.parquet")
     parser.add_argument("--symbol", default="BTC/USDT")
-    parser.add_argument("--config", default="config/settings.yaml")
+    parser.add_argument("--config", default="config/settings.base.yaml")
     args = parser.parse_args()
 
     config = load_config(args.config)

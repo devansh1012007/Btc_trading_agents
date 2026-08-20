@@ -335,7 +335,7 @@ def test_router_granularity_mismatch_fallback(tmp_path):
 # --------------------------------------------------------------------
 
 def test_yaml_config_loading():
-    with open("config/settings.yaml") as f:
+    with open("config/settings.base.yaml") as f:
         config = yaml.safe_load(f)
 
     for block in ["system", "labeling", "experts", "opportunity_filter", "router", "models", "backtest"]:
@@ -351,7 +351,7 @@ def test_timeframe_adaptation():
     """Switching system.data_granularity is a config change, not a code
     change -- build_experts() + evaluate() must run cleanly for any
     granularity string with no models trained yet (pure fallback mode)."""
-    with open("config/settings.yaml") as f:
+    with open("config/settings.base.yaml") as f:
         config = yaml.safe_load(f)
 
     experts = build_experts(config, data_granularity="30s")

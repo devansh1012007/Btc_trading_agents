@@ -60,6 +60,15 @@ class DynamicStructureEngine:
         self._latest_regime_state: Optional[RegimeState] = None
         self.touch_events: List[Dict] = []
 
+        # Full zone lifecycle log (Phase 4, §7.3): created/touched/
+        # rejected/broke/merged/decayed, as discrete events -- not just
+        # periodic ZoneMap snapshots. touch_events above only ever
+        # captures rejection/breakout outcomes (Phase 2/3's contract,
+        # left unchanged so nothing that reads it breaks); this is a
+        # superset built specifically for a future graph-based model that
+        # needs each zone's full history as a sequence, not samples.
+        self.lifecycle_events: List[Dict] = []
+
         self._zone_survival_model = None
         self._zone_survival_feature_names = None
         if zone_survival_model_path:
@@ -192,6 +201,29 @@ class DynamicStructureEngine:
                 day_of_week=bar.get("day_of_week", 0),
                 regime_state=self._latest_regime_state,
             ),
+        })
+
+        # Mirror into the lifecycle log (§7.3): "rejected"/"broke" naming
+        # to match the plan's schema, distinct from touch_events'
+        # "rejection"/"breakout" (kept as-is above for backward
+        # compatibility with Phase 2/3 code that reads touch_events).
+        lifecycle_type = "rejected" if event_type == "rejection" else "broke"
+        self._log_lifecycle_event(zone_id, lifecycle_type, zone.mid, zone.strength)
+
+    def _log_lifecycle_event(
+        self, zone_id: str, event_type: str, price_at_event: float,
+        zone_strength_at_event: float, related_zone_id: Optional[str] = None,
+    ) -> None:
+        bar = self.price_history[-1] if len(self.price_history) else {}
+        self.lifecycle_events.append({
+            "zone_id": zone_id,
+            "event_type": event_type,  # created | touched | rejected | broke | merged | decayed
+            "timestamp": bar.get("timestamp"),
+            "bar_index": self.bar_counter,
+            "price_at_event": price_at_event,
+            "zone_strength_at_event": zone_strength_at_event,
+            "related_zone_id": related_zone_id,
+            "regime_at_event": self._latest_regime_state.primary_regime.value if self._latest_regime_state else None,
         })
 
     @staticmethod
@@ -377,6 +409,7 @@ class DynamicStructureEngine:
         )
         self.zones[zone_id] = zone
         self._confirmed_at_bar[zone_id] = self.bar_counter
+        self._log_lifecycle_event(zone_id, "created", mid, zone.strength)
 
     def _update_zone_ages(self) -> None:
         for zone_id, zone in list(self.zones.items()):
@@ -395,6 +428,8 @@ class DynamicStructureEngine:
                 )
 
             if self.zones[zone_id].survival_probability < 0.05:
+                decayed_zone = self.zones[zone_id]
+                self._log_lifecycle_event(zone_id, "decayed", decayed_zone.mid, decayed_zone.strength)
                 del self.zones[zone_id]
                 self._confirmed_at_bar.pop(zone_id, None)
 
@@ -430,6 +465,7 @@ class DynamicStructureEngine:
                     )
                     self.zones[z1.zone_id] = merged
                     zones_to_remove.add(z2.zone_id)
+                    self._log_lifecycle_event(z1.zone_id, "merged", merged.mid, merged.strength, related_zone_id=z2.zone_id)
 
         for zone_id in zones_to_remove:
             if zone_id in self.zones:

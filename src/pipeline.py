@@ -40,12 +40,13 @@ from src.layers.expert_layer import ExpertLayer
 from src.layers.opportunity_filter import OpportunityFilter
 from src.layers.router import Router
 from src.experts.expert_registry import build_experts
+from src.liquidity.synthetic_liquidity_model import attach_synthetic_liquidity
 from src.state.contracts import SystemState, MarketSnapshot, FeatureVector
 from src.state.serialization import system_state_to_dict, dataframe_to_parquet
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CONFIG_PATH = "config/settings.yaml"
+DEFAULT_CONFIG_PATH = "config/settings.base.yaml"
 
 
 class TradingPipeline:
@@ -62,10 +63,21 @@ class TradingPipeline:
         symbol: str = "BTC/USDT",
         data_dir: str = "data",
         config_path: str = DEFAULT_CONFIG_PATH,
+        config: Optional[dict] = None,
     ):
+        """
+        Args:
+            config: an already-loaded config dict (e.g. from
+                src.utils.config_helpers.load_layered_config(env)) takes
+                precedence over config_path when provided -- this is how
+                scripts/run.py injects the env-merged (paper/live)
+                config, since reassigning self.config AFTER construction
+                would silently miss every layer/sub-component built
+                during __init__ from the un-merged config.
+        """
         self.symbol = symbol
         self.data_dir = data_dir
-        self.config = self._load_config(config_path)
+        self.config = config if config is not None else self._load_config(config_path)
 
         system_cfg = self.config.get("system", {})
         data_cfg = self.config.get("data", {})
@@ -75,6 +87,7 @@ class TradingPipeline:
         opp_cfg = self.config.get("opportunity_filter", {})
         router_cfg = self.config.get("router", {})
         labeling_cfg = self.config.get("labeling", {})
+        self.liquidity_cfg = self.config.get("liquidity", {}).get("synthetic", {})
 
         self.data_granularity = system_cfg.get("data_granularity", "1m")
         self.connector = CCXTConnector(
@@ -147,6 +160,10 @@ class TradingPipeline:
         )
 
         fv = attach_structural_features(fv, zone_map)
+
+        # Phase 4 §4.2 / Finding #2 fix -- see replay.py's identical
+        # comment for the full rationale and the two-pass design note.
+        snapshot = attach_synthetic_liquidity(snapshot, fv, self.liquidity_cfg)
 
         expert_outputs = self.expert_layer.evaluate(fv, zone_map, regime_state)
         opportunity_score = self.opportunity_filter.evaluate(expert_outputs, regime_state, zone_map, snapshot, fv)

@@ -21,6 +21,7 @@ class MarketDataLayer:
         timestamp_unix: int,
         ohlcv_row: Dict[str, float],
         ticker_data: Optional[Dict] = None,
+        liquidity_source: str = "synthetic",
     ) -> MarketSnapshot:
         open_price = ohlcv_row.get('open', 0.0)
         high_price = ohlcv_row.get('high', 0.0)
@@ -34,6 +35,13 @@ class MarketDataLayer:
             bid_vol = ticker_data.get('bid_volume', 0.0)
             ask_vol = ticker_data.get('ask_volume', 0.0)
         else:
+            # Crude placeholder only -- Phase 4's synthetic liquidity model
+            # (src/liquidity/synthetic_liquidity_model.py) replaces this via
+            # attach_synthetic_liquidity() once a FeatureVector exists for
+            # the bar (see that module's docstring for why this two-pass
+            # split is necessary). This branch's output should not be
+            # trusted downstream; it exists only so a snapshot always has
+            # *some* numeric bid/ask before that second pass runs.
             mid = (high_price + low_price) / 2
             bid = mid * 0.999
             ask = mid * 1.001
@@ -63,6 +71,7 @@ class MarketDataLayer:
             funding_rate=ticker_data.get('funding_rate') if ticker_data else None,
             hour_utc=hour_utc,
             day_of_week=day_of_week,
+            liquidity_source=liquidity_source if ticker_data else "synthetic",
         )
 
         return snapshot

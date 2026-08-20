@@ -65,6 +65,12 @@ class MarketSnapshot:
     hour_utc: int = 0
     day_of_week: int = 0  # 0=Monday, 6=Sunday
 
+    # Which liquidity estimate produced bid/ask/bid_volume/ask_volume above
+    # (Phase 4, §4.4): "synthetic" for backtesting/historical replay (no
+    # real order book exists for the past), "real_order_book" when a live
+    # CCXT order book was actually queried (paper-live-data / live modes).
+    liquidity_source: str = "synthetic"
+
     def to_dict(self) -> Dict:
         """Convert to dict, handling Enums."""
         return asdict(self)

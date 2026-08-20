@@ -104,9 +104,16 @@ class OpportunityFilter:
         if market.spread_pct > cfg.get("max_spread_pct", float("inf")):
             failed_rules.append(f"spread_too_wide({market.spread_pct:.4f})")
 
-        depth = market.bid_volume + market.ask_volume
-        if depth < cfg.get("min_depth_usdt", 0.0):
-            failed_rules.append(f"insufficient_depth({depth:.2f})")
+        # bid_volume/ask_volume are base-currency units (BTC), min_depth_usdt
+        # is a quote-currency (USDT) threshold -- must convert before
+        # comparing. Pre-existing Phase 3 bug, masked until now: depth was
+        # always 0 before Finding #2's synthetic liquidity model, so this
+        # check failed for a different reason (zero depth) regardless of
+        # units; fixing Finding #2 exposed the unit mismatch for the first
+        # time (see PHASE4_COMPLETE.md).
+        depth_usdt = (market.bid_volume + market.ask_volume) * market.close
+        if depth_usdt < cfg.get("min_depth_usdt", 0.0):
+            failed_rules.append(f"insufficient_depth({depth_usdt:.2f})")
 
         recent_vol = fv.volatility_5m
         if recent_vol < cfg.get("volatility_floor_pct", 0.0):
@@ -167,8 +174,8 @@ class OpportunityFilter:
         max_spread = cfg.get("max_spread_pct", 1.0) or 1.0
         spread_component = max(0.0, 1.0 - market.spread_pct / max_spread)
         min_depth = cfg.get("min_depth_usdt", 1.0) or 1.0
-        depth = market.bid_volume + market.ask_volume
-        depth_component = min(1.0, depth / min_depth) if min_depth > 0 else 1.0
+        depth_usdt = (market.bid_volume + market.ask_volume) * market.close
+        depth_component = min(1.0, depth_usdt / min_depth) if min_depth > 0 else 1.0
         return float(np.clip((spread_component + depth_component) / 2, 0.0, 1.0))
 
     @staticmethod

@@ -19,7 +19,7 @@ from src.layers.router import EXPERT_NAMES
 from src.state.contracts import ExpertAction
 
 
-def load_config(path="config/settings.yaml") -> dict:
+def load_config(path="config/settings.base.yaml") -> dict:
     p = Path(path)
     return (yaml.safe_load(open(p)) or {}) if p.exists() else {}
 
@@ -29,7 +29,7 @@ def main():
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", default="data/processed/router_vs_hindsight.parquet")
     parser.add_argument("--symbol", default="BTC/USDT")
-    parser.add_argument("--config", default="config/settings.yaml")
+    parser.add_argument("--config", default="config/settings.base.yaml")
     args = parser.parse_args()
 
     config = load_config(args.config)

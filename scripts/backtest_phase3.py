@@ -21,7 +21,7 @@ from src.backtest.replay import replay_full_stack
 from src.labeling.triple_barrier import label_triple_barrier, compute_barrier_pcts, barrier_volatility_pct
 
 
-def load_config(path="config/settings.yaml") -> dict:
+def load_config(path="config/settings.base.yaml") -> dict:
     p = Path(path)
     return (yaml.safe_load(open(p)) or {}) if p.exists() else {}
 
@@ -107,7 +107,7 @@ def main():
     parser.add_argument("--output", default="data/processed/backtest_results.parquet")
     parser.add_argument("--metrics-output", default="data/processed/backtest_metrics.json")
     parser.add_argument("--symbol", default="BTC/USDT")
-    parser.add_argument("--config", default="config/settings.yaml")
+    parser.add_argument("--config", default="config/settings.base.yaml")
     args = parser.parse_args()
 
     config = load_config(args.config)

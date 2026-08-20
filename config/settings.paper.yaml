@@ -1,0 +1,12 @@
+###############################################################################
+# PAPER environment overlay (Phase 4, §11). Merged on top of
+# settings.base.yaml by load_layered_config(env="paper") -- this is the
+# DEFAULT environment (§1: "build all three execution modes with paper as
+# default"). Only the deltas that actually differ from base live here.
+###############################################################################
+system:
+  sandbox: true
+
+execution:
+  mode: "paper_sim"             # switch to "paper_live" once you want real order-book liquidity
+  confirm_real_money: false
