@@ -1,0 +1,76 @@
+# ── Data (mounted at runtime, not baked into image) ────────────────────────
+data/raw/
+data/processed/
+data/models/
+data/logs/
+data/control/
+data/registry.db
+
+# ── Python cache ──────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ── Virtualenv (built in Dockerfile, not copied) ──────────────────────────
+venv/
+.env/
+.venv/
+
+# ── IDE / editor ──────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS ────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Notebooks ─────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ── Testing ───────────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ── Logs ──────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Docs (not needed in container) ────────────────────────────────────────
+docs/
+
+# ── Git ───────────────────────────────────────────────────────────────────
+.git/
+.gitignore
+
+# ── Docker files (not needed inside container) ────────────────────────────
+Dockerfile
+docker-compose.yml
+.env*
+.dockerignore
+
+# ── README / LICENSE ──────────────────────────────────────────────────────
+README.md
+LICENSE
+AGENTS.md

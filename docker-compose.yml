@@ -1,0 +1,81 @@
+version: "3.8"
+
+services:
+  btc-trading-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: btc-trading-agent
+    restart: unless-stopped
+
+    # ── Environment variables ──────────────────────────────────────────
+    environment:
+      # Execution mode: "historical" (backtest) or "live" (continuous)
+      - TRADING_MODE=${TRADING_MODE:-historical}
+      # Config environment: "paper" (sandbox) or "live" (real exchange)
+      - TRADING_ENV=${TRADING_ENV:-paper}
+      # Historical backtest: path to OHLCV data (CSV or Parquet)
+      - INPUT_DATA=${INPUT_DATA:-}
+      # Override symbol from config
+      - SYMBOL=${SYMBOL:-BTC/USDT}
+      # Max bars to process (historical mode)
+      - MAX_BARS=${MAX_BARS:-}
+      # Initial equity for backtest
+      - INITIAL_EQUITY=${INITIAL_EQUITY:-10000}
+      # Binance API keys (only needed for live mode with real orders)
+      - BTC_BOT_API_KEY=${BTC_BOT_API_KEY:-}
+      - BTC_BOT_API_SECRET=${BTC_BOT_API_SECRET:-}
+      # Network resilience
+      - NETWORK_RETRY_MAX=${NETWORK_RETRY_MAX:-5}
+      - NETWORK_RETRY_BASE_DELAY=${NETWORK_RETRY_BASE_DELAY:-10}
+      - NETWORK_RETRY_BACKOFF=${NETWORK_RETRY_BACKOFF:-2}
+      # Graceful shutdown timeout
+      - SHUTDOWN_TIMEOUT=${SHUTDOWN_TIMEOUT:-30}
+
+    # ── Volumes: persistent data across restarts ───────────────────────
+    volumes:
+      # Raw market data (OHLCV files)
+      - ./data/raw:/opt/trading-agent/data/raw
+      # Processed features (Parquet output)
+      - ./data/processed:/opt/trading-agent/data/processed
+      # Trained models (pickle files)
+      - ./data/models:/opt/trading-agent/data/models
+      # Logs, journals, system state archives
+      - ./data/logs:/opt/trading-agent/data/logs
+      # Control files (emergency stop, etc.)
+      - ./data/control:/opt/trading-agent/data/control
+      # SQLite registry (circuit breakers, model versions, trade journal)
+      - ./data/registry.db:/opt/trading-agent/data/registry.db
+      # Config overrides (optional: mount a custom settings file)
+      - ./config/settings.local.yaml:/opt/trading-agent/config/settings.local.yaml:ro
+
+    # ── Health check ───────────────────────────────────────────────────
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import pandas; import lightgbm; import ccxt; print('OK')\" || exit 1"]
+      interval: 60s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+
+    # ── Resource limits ────────────────────────────────────────────────
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "1.0"
+        reservations:
+          memory: 512M
+          cpus: "0.25"
+
+    # ── Logging ────────────────────────────────────────────────────────
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "3"
+        compress: "true"
+
+# ── Network (optional: isolate from host network) ──────────────────────
+# networks:
+#   trading-net:
+#     driver: bridge
