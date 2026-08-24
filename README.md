@@ -139,6 +139,9 @@ python -m src.pipeline
 # Historical backtest through the full stack
 python scripts/run.py --mode historical --input data/raw/BTCUSDT.csv --env paper
 
+# Full-stack performance report vs Project_Plan.md targets
+python scripts/full_stack_walk_forward_backtest.py --input data/raw/BTCUSDT.csv --env paper
+
 # Live loop (requires real credentials + confirm_real_money=true)
 python scripts/run.py --mode live --env live
 

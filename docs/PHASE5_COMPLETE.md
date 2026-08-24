@@ -47,6 +47,16 @@
 - Integrated into `run_historical()` — every bar produces a trace
 - Traces written to `data/logs/decision_traces/` as partitioned JSONL
 
+### M5.2: Full-stack walk-forward backtest + performance report
+
+- `scripts/full_stack_walk_forward_backtest.py`: runs Features → Regime → Structure → Experts → Opportunity Filter → Router → **Risk Layer** → **Execution** (paper_sim fills, real position lifecycle) over historical OHLCV — metrics computed on the *realized* trade sequence, not layer predictions
+- `src/reporting/performance_report.py`: pure metric library — total return, per-trade Sharpe/Sortino, max drawdown, win rate, profit factor, expectancy, avg win/loss; breakdowns by expert/regime/hour/day; confidence-calibration reliability buckets with weighted miscalibration scores
+- **Baseline comparisons (§5.2 rigor checks)**: vs buy-and-hold, vs simple momentum (Project_Plan.md's stated baseline), vs naive highest-confidence router (isolate Router's value), vs no-opportunity-filter (isolate filter's value) — each with ADDS_VALUE / SUBTRACTS_VALUE / INDISTINGUISHABLE / INSUFFICIENT_DATA verdicts
+- **Success criteria check**: every run is scored against Project_Plan.md §1's original targets (positive expectancy after fees, max DD < 8%, win rate + Sharpe beat simple momentum)
+- Walk-forward design: one continuous replay segmented into contiguous non-overlapping evaluation windows (models are fixed — rule-based fallback until manual retrain post-rename — so there is no per-fold retraining to sequence; documented in the report header)
+- Output: `data/reports/backtest_<ts>.{json,md}` + a row in `data/registry.db::experiments`
+- Tests (`tests/test_phase5.py`, 15 tests): metric completeness with no NaN-swallowed gaps, baseline execution + verdict vocabulary, calibration bucket edges (incl. confidence=1.0 landing in last bucket), JSON-safe serialization, pure-function units with known values
+
 ### M5.3: Cross-layer consistency validation + preflight.py
 
 - `src/config/consistency_validator.py`: `validate_config_consistency()` with 4 checks:
@@ -114,11 +124,12 @@
 ## Test Results
 
 ```
-53 passed, 1 warning in 1.09s
+68 passed in ~17s
   - 10 Phase 1 tests
   - 16 Phase 2 tests
   - 16 Phase 3 tests
   - 21 Phase 4 tests
+  - 15 Phase 5 tests (incl. full-stack backtest integration)
 ```
 
 All existing tests pass. The FeatureVector rename was coordinated across all test suites with updated `make_feature_vector()` helpers.
@@ -129,6 +140,9 @@ All existing tests pass. The FeatureVector rename was coordinated across all tes
 
 - [x] `feature_engine.py` genuinely reads its periods from config; regression-tested
 - [x] Every bar produces a `DecisionTrace`; `diagnose.py` reads the same underlying data
+- [x] **Full-stack walk-forward backtest computes Sharpe/Sortino/drawdown/win-rate/expectancy and reports them against Project_Plan.md's original targets (M5.2)**
+- [x] **Router-vs-naive and Opportunity-Filter-vs-unfiltered baseline comparisons implemented and reported, with per-run verdicts (M5.2)**
+- [x] **Calibration reliability data computed for every expert and the router, with weighted miscalibration scores (M5.2)**
 - [x] FeatureVector field names are period-agnostic (short/medium/long)
 - [x] `resolve_regime_param()` exists as unified mechanism
 - [x] Hot-reload works for safe-listed paths
@@ -138,9 +152,9 @@ All existing tests pass. The FeatureVector rename was coordinated across all tes
 - [x] `run_live_loop()` implemented (not stub)
 - [x] Cross-layer consistency validator catches dead breakers
 - [x] `preflight.py` runs validation before session start
-- [x] Experiment log records every run with config snapshot
+- [x] Experiment log records every run with config snapshot (verified: backtest runs land in `experiments` with config hash + metrics + criteria-passed count)
 - [x] `config/tuning.yaml` structure defined (in plan, not yet shipped as separate file)
-- [x] All 53 existing tests passing
+- [x] All tests passing (53 prior + 15 new = 68)
 - [x] `PHASE5_COMPLETE.md` — this document
 
 ---

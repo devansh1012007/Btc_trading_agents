@@ -6,10 +6,15 @@ file (data/registry.db), one schema, one place every other Phase 4 module
 gets a connection from -- avoids four modules each hand-rolling their own
 sqlite3.connect() and CREATE TABLE IF NOT EXISTS.
 """
+import hashlib
+import json
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+import yaml
 
 DEFAULT_DB_PATH = "data/registry.db"
 
@@ -112,17 +117,12 @@ def log_experiment(
     db_path: str = DEFAULT_DB_PATH,
 ) -> str:
     """Log a backtest or training run to the experiments table."""
-    import hashlib
-    from datetime import datetime, timezone
-
-    # Compute config hash
-    config_str = yaml.dump(config, default_flow_style=False)
+    config_str = yaml.dump(config, default_flow_style=False, sort_keys=True)
     config_hash = hashlib.sha256(config_str.encode()).hexdigest()[:16]
 
-    # Truncate config snapshot (store first 4000 chars)
     config_snapshot = config_str[:4000]
-
-    experiment_id = f"exp_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{hashlib.md5(config_hash.encode()).hexdigest()[:8]}"
+    now = datetime.now(timezone.utc)
+    experiment_id = f"exp_{now.strftime('%Y%m%d_%H%M%S')}_{hashlib.md5(config_hash.encode()).hexdigest()[:8]}"
     metrics_json = json.dumps(metrics) if metrics else None
 
     with connect(db_path) as conn:
@@ -130,7 +130,7 @@ def log_experiment(
             "INSERT INTO experiments (experiment_id, run_type, started_at, config_hash, "
             "config_snapshot, component, metrics_json, git_commit) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (experiment_id, run_type, datetime.now(timezone.utc).isoformat(),
+            (experiment_id, run_type, now.isoformat(),
              config_hash, config_snapshot, component, metrics_json, git_commit),
         )
 

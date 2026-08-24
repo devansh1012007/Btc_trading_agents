@@ -29,6 +29,8 @@ config/
   settings.live.yaml       ← env overlay
 scripts/
   run.py                   ← deployment entry (historical replay + live loop)
+  full_stack_walk_forward_backtest.py ← M5.2: realized-metrics backtest vs Project_Plan.md
+                                           targets, 4 baselines, calibration, reports+experiment log
   train_*.py               ← per-component training
   retrain_all.py           ← cron retraining (never auto-promotes)
   approve_model.py         ← manual promotion in model registry
@@ -67,6 +69,10 @@ python -m src.pipeline
 
 # Historical backtest through full stack
 python scripts/run.py --mode historical --input data/raw/BTCUSDT.csv --env paper
+
+# Full-stack performance report vs Project_Plan.md targets (M5.2)
+python scripts/full_stack_walk_forward_backtest.py --input data/raw/BTCUSDT.csv --env paper
+python scripts/full_stack_walk_forward_backtest.py --synthetic 900 --relax-liquidity  # smoke run
 
 # Live loop (requires real credentials + confirm_real_money=true)
 python scripts/run.py --mode live --env live
