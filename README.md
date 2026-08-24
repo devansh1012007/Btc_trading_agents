@@ -62,6 +62,7 @@ Market Data → Feature Engine → Dynamic Structure → Regime Detection
 - **Live validation runbook** — scripted 5-step testnet procedure
 - **FeatureVector rename** — period-agnostic names (`momentum_short/medium/long`, `volatility_short/medium/long`)
 - **FeatureEngine config-driven** — periods read from `feature_engine.*` config block
+- **TUI signal console** — 6-view terminal dashboard (funnel, journal, performance vs targets, calibration, risk/faults, registry) with auto-refresh and a TTY-less `--once` renderer
 
 **Planned (not yet implemented):**
 
@@ -156,6 +157,10 @@ python scripts/preflight.py --env paper
 
 # Config consistency validation
 python scripts/validate_config_consistency.py
+
+# TUI dashboard (live, 6 views, auto-refresh) / headless one-shot render
+python scripts/dashboard.py            # keys: 1-6 views · r refresh · q quit
+python scripts/dashboard.py --once
 ```
 
 ### Training Models

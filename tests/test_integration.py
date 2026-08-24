@@ -21,6 +21,9 @@ from src.layers.market_data import MarketDataLayer
 from src.layers.feature_engine import FeatureEngine
 from src.state.serialization import system_state_to_dict
 from pathlib import Path
+import yaml
+
+CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "settings.base.yaml"
 
 
 def generate_mock_ohlcv(n_bars: int = 100, start_price: float = 50000) -> pd.DataFrame:
@@ -67,6 +70,8 @@ def test_end_to_end_pipeline():
     
     # Step 1: Generate mock data
     df_ohlcv = generate_mock_ohlcv(n_bars=100)
+    with open(CONFIG_PATH) as f:
+        config = yaml.safe_load(f) or {}
     
     # Step 2: Create MarketSnapshots
     logger.info("\nStep 2: Creating MarketSnapshots...")

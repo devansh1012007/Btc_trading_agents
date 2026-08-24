@@ -41,6 +41,8 @@ scripts/
   validate_config_consistency.py ← pre-flight validation (Phase 5)
   preflight.py             ← runs consistency checks before session start (Phase 5)
   validate_live_backend.py ← scripted testnet validation runbook (Phase 5)
+  dashboard.py             ← TUI signal console: 6 views over traces/journal/
+                             reports/registry; --once for TTY-less render (M5.10)
 tests/
   test_phase1.py           ← Market data, feature engine
   test_phase2.py           ← Structure engine + regime detection
@@ -88,6 +90,10 @@ python scripts/preflight.py --env paper
 
 # Config consistency validation
 python scripts/validate_config_consistency.py
+
+# TUI dashboard (live, 6 views, auto-refresh) / headless one-shot render
+python scripts/dashboard.py            # keys: 1-6 views · r refresh · q quit
+python scripts/dashboard.py --once
 ```
 
 ## Config system (easy to get wrong)

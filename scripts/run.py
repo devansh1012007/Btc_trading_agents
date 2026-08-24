@@ -30,12 +30,15 @@ constraint.
 import argparse
 import logging
 import os
+import sys
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional, List
 
 import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -216,19 +219,22 @@ def run_historical(pipeline: TradingPipeline, risk_layer: RiskLayer, execution_e
                 values={"fill_price": exec_record.fill_price, "slippage_pct": exec_record.slippage_pct},
             ))
 
-        # Determine terminal stage and reason
+        # Determine terminal stage and reason. Filter veto is classified
+        # BEFORE the router: when the filter rejects, Router.decide() itself
+        # returns no_trade with reasoning "opportunity_filter_rejected", so
+        # checking the router first mislabels every filter veto.
         if exec_record and exec_record.status in ("filled", "partial"):
             terminal_stage = "executed"
             terminal_reason = f"filled via {state.router_decision.selected_expert if state.router_decision else 'unknown'}"
         elif risk_decision and not risk_decision.approved:
             terminal_stage = "risk_layer"
             terminal_reason = risk_decision.rejection_reason or "risk rejection"
-        elif router_decision and router_decision.selected_expert == "no_trade":
-            terminal_stage = "router_no_trade"
-            terminal_reason = router_decision.reasoning or "router declined"
         elif opp_score and not opp_score.tradable:
             terminal_stage = "opportunity_filter"
             terminal_reason = " | ".join(opp_score.failed_rules) if opp_score.failed_rules else "filter veto"
+        elif router_decision and router_decision.selected_expert == "no_trade":
+            terminal_stage = "router_no_trade"
+            terminal_reason = router_decision.reasoning or "router declined"
         else:
             terminal_stage = "no_expert_candidate"
             terminal_reason = "no expert candidate"
@@ -477,12 +483,16 @@ def run_live_loop(pipeline: TradingPipeline, risk_layer: RiskLayer, execution_en
             elif risk_decision and not risk_decision.approved:
                 terminal_stage = "risk_layer"
                 terminal_reason = risk_decision.rejection_reason or "risk rejection"
+            elif opp_score and not opp_score.tradable:
+                # Filter veto must be classified BEFORE the router: when the
+                # filter rejects, Router.decide() itself returns no_trade with
+                # reasoning "opportunity_filter_rejected", so checking the
+                # router first mislabels every filter veto as a router decline.
+                terminal_stage = "opportunity_filter"
+                terminal_reason = " | ".join(opp_score.failed_rules) if opp_score.failed_rules else "filter veto"
             elif router_decision and router_decision.selected_expert == "no_trade":
                 terminal_stage = "router_no_trade"
                 terminal_reason = router_decision.reasoning or "router declined"
-            elif opp_score and not opp_score.tradable:
-                terminal_stage = "opportunity_filter"
-                terminal_reason = " | ".join(opp_score.failed_rules) if opp_score.failed_rules else "filter veto"
             else:
                 terminal_stage = "no_expert_candidate"
                 terminal_reason = "no expert candidate"

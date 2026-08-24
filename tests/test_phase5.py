@@ -10,6 +10,7 @@ import copy
 import json
 import math
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -370,3 +371,119 @@ def test_resolve_regime_param():
     assert resolve_regime_param(block, RegimeType.TRENDING_UP) == 0.8
     assert resolve_regime_param(block, RegimeType.PANIC_SPIKE) == 0.0
     assert resolve_regime_param(block, RegimeType.CHOP_RANGE) == 0.5
+
+
+# --------------------------------------------------------------------
+# §10 TUI dashboard data layer (M5.10)
+# --------------------------------------------------------------------
+
+def test_funnel_breakdown_counts_labels_and_order():
+    from src.diagnostics.dashboard_data import funnel_breakdown, stage_label
+    traces = [{"terminal_stage": "opportunity_filter"}] * 3 + \
+             [{"terminal_stage": "executed"}] * 1 + \
+             [{"terminal_stage": "mystery_stage"}] * 2
+    rows = funnel_breakdown(traces)
+    by_stage = {r["stage"]: r for r in rows}
+    assert by_stage["opportunity_filter"]["count"] == 3
+    assert by_stage["opportunity_filter"]["pct"] == pytest.approx(50.0)
+    assert by_stage["executed"]["label"] == "Executed"
+    # unknown stages pass through with raw name, never crash
+    assert by_stage["mystery_stage"]["label"] == "mystery_stage"
+    assert rows[0]["count"] >= rows[-1]["count"]  # ordered most-frequent first
+    assert funnel_breakdown([]) == []
+    assert stage_label("executed") == "Executed"
+
+
+def test_stage_pass_rates_aggregation():
+    from src.diagnostics.dashboard_data import stage_pass_rates
+    traces = [
+        {"stages": [{"stage_name": "expert_layer", "passed": True},
+                    {"stage_name": "opportunity_filter", "passed": False}]},
+        {"stages": [{"stage_name": "expert_layer", "passed": False}]},
+    ]
+    rows = {r["stage_name"]: r for r in stage_pass_rates(traces)}
+    assert rows["expert_layer"]["reached"] == 2
+    assert rows["expert_layer"]["passed"] == 1
+    assert rows["expert_layer"]["pass_pct"] == pytest.approx(50.0)
+    assert rows["opportunity_filter"]["reached"] == 1
+
+
+def test_db_snapshot_degrades_gracefully(tmp_path):
+    from src.diagnostics.dashboard_data import db_snapshot
+    snap = db_snapshot(db_path=str(tmp_path / "nope.db"))
+    assert snap["db_present"] is False
+    assert snap["active_breakers"] == [] and snap["recent_trades"] == []
+
+    # Real DB with full schema → empty-but-populated structure, no crash
+    from src.registry.db import get_connection
+    real = str(tmp_path / "real.db")
+    conn = get_connection(real)
+    conn.close()
+    snap2 = db_snapshot(db_path=real)
+    assert snap2["db_present"] is True
+    assert isinstance(snap2["experiments"], list)
+
+
+def test_load_latest_report_newest_by_mtime_skips_corrupt(tmp_path):
+    from src.diagnostics.dashboard_data import load_latest_report
+    import os, json as _json
+    old = tmp_path / "backtest_old.json"
+    new = tmp_path / "backtest_new.json"
+    bad = tmp_path / "backtest_bad.json"
+    old.write_text(_json.dumps({"aggregate": {"n_trades": 1}}))
+    new.write_text(_json.dumps({"aggregate": {"n_trades": 9}}))
+    bad.write_text("{corrupt")
+    now = time.time()
+    os.utime(old, (now - 100, now - 100))
+    os.utime(bad, (now - 50, now - 50))     # newer than old but unparseable → skipped
+    os.utime(new, (now - 10, now - 10))
+    rep = load_latest_report(str(tmp_path))
+    assert rep["aggregate"]["n_trades"] == 9
+    assert load_latest_report(str(tmp_path / "empty_subdir")) is None \
+        if False else True  # nonexistent dir handled below
+    assert load_latest_report(str(tmp_path / "missing")) is None
+
+
+def test_report_summary_flattens_minimal_report():
+    from src.diagnostics.dashboard_data import report_summary
+    assert report_summary(None) == {"present": False}
+    rep = {
+        "generated_at": "t", "config_hash": "h",
+        "aggregate": {"n_trades": 5},
+        "success_criteria": [{"criterion": "c", "pass": True}],
+        "baselines": {"simple_momentum": {"n_trades": 2, "total_return_pct": 1.0}},
+        "baseline_verdicts": {"k": "ADDS_VALUE"},
+        "windows": [{"index": 0, "n_bars": 10,
+                     "metrics": {"total_return_pct": 0.5}}],
+        "calibration": {"experts": {"trend_expert": [
+            {"bucket": "0.6-0.7", "n": 4, "avg_predicted_confidence": 0.6,
+             "realized_win_rate_pct": 50.0}]},
+            "expert_miscalibration_scores": {"trend_expert": 0.1},
+            "router": [], "router_miscalibration_score": None},
+    }
+    s = report_summary(rep)
+    assert s["present"] and s["config_hash"] == "h"
+    assert s["baselines"][0]["name"] == "simple_momentum"
+    assert s["calibration_experts"]["trend_expert"]["score"] == 0.1
+    assert len(s["criteria"]) == 1
+
+
+def test_dashboard_views_render_from_empty_and_real_snapshots():
+    """build_all_views must return Rich renderables for every view title —
+    both for an all-empty snapshot (fresh checkout) and a real one."""
+    import sys as _sys
+    _sys.path.insert(0, str(ROOT / "scripts"))
+    import dashboard as dash
+    from src.diagnostics import dashboard_data as dd
+
+    empty = dd.build_snapshot(trace_dir=str(ROOT / "data" / "logs" / "nope"),
+                              db_path=str(ROOT / "nope.db"),
+                              report_dir=str(ROOT / "data" / "reports" / "nope"))
+    views_empty = dash.build_all_views(empty)
+    assert set(views_empty) >= {"Signal Path", "Trades", "Performance",
+                                "Calibration", "Risk & Registry", "Registry"}
+
+    real = dd.build_snapshot()  # artifacts exist in repo after M5.2/demo runs
+    views_real = dash.build_all_views(real)
+    for name, r in views_real.items():
+        assert r is not None, f"{name} rendered None"

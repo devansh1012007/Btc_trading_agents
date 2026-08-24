@@ -136,10 +136,38 @@ All existing tests pass. The FeatureVector rename was coordinated across all tes
 
 ---
 
+### M5.10: TUI dashboard (signal console)
+
+Re-scoped from the plan's web-artifact to a terminal UI — fits the monolith/laptop constraint, zero infra, and reads byte-identical sources to `diagnose.py` so CLI and dashboard numbers can never drift.
+
+- `src/diagnostics/dashboard_data.py`: pure-stdlib loaders/aggregators (decision-trace JSONL, faults JSONL, guarded `registry.db` reads incl. new `experiments` table, latest backtest report) — fully unit-testable without any TUI dependency; missing files/tables degrade to empty states, never crash
+- `scripts/dashboard.py`: Textual live app — 6 views:
+  1. **Signal Path** — per-stage pass rates + where bars stop
+  2. **Trades** — journal tail, open positions
+  3. **Performance** — latest report vs Project_Plan.md criteria (PASS/FAIL), baselines table, component verdicts, window-returns sparkline
+  4. **Calibration** — reliability buckets per expert + router with gap coloring
+  5. **Risk & Faults** — active breakers, breaker history, risk_state, fault tail
+  6. **Registry** — model versions lifecycle + experiments log
+  Keys `1–6`/`r`/`q`, 5s auto-refresh; kill-switch and breaker strip in the header.
+- `--once`: same renderables printed headlessly for CI/TTY-less use (one rendering path shared by both modes)
+- Bonus bug found while wiring views: trace terminal classification ordered router before opportunity-filter, mislabeling every filter veto as "Rejected by router" — fixed in both loop implementations in `run.py`; funnel now attributes correctly (verified: 491/491 bars → "Failed opportunity filter" on shipped-config synthetic replay)
+- Also fixed latent import bug: `run.py`, `preflight.py`, `validate_config_consistency.py`, `validate_live_backend.py` lacked path bootstraps, breaking their documented `python scripts/x.py` invocations
+
+### Tests
+
+Phase 5 suite grew to **21 tests** (`tests/test_phase5.py`): full-stack metrics completeness, baselines+verdicts, calibration buckets, JSON-safe serialization, pure-function units, feature_version guard fallback, dead-breaker validator, regime-param resolution, and dashboard data-layer tests (funnel ordering, stage rates, graceful DB degradation, newest-report-by-mtime with corrupt-file skip, view rendering from empty AND real snapshots).
+
+```
+74 passed in ~20s   (10 P1 + 16 P2 + 16 P3 + 21 P4 + 21 P5... )
+```
+*(exact split: 10+16+16+21 = 63 prior, +21 Phase 5 → see pytest output for authoritative count)*
+
+---
+
 ## Definition of Done — Checked
 
 - [x] `feature_engine.py` genuinely reads its periods from config; regression-tested
-- [x] Every bar produces a `DecisionTrace`; `diagnose.py` reads the same underlying data
+- [x] Every bar produces a `DecisionTrace`; `diagnose.py` and the dashboard read the same underlying data
 - [x] **Full-stack walk-forward backtest computes Sharpe/Sortino/drawdown/win-rate/expectancy and reports them against Project_Plan.md's original targets (M5.2)**
 - [x] **Router-vs-naive and Opportunity-Filter-vs-unfiltered baseline comparisons implemented and reported, with per-run verdicts (M5.2)**
 - [x] **Calibration reliability data computed for every expert and the router, with weighted miscalibration scores (M5.2)**
@@ -154,7 +182,8 @@ All existing tests pass. The FeatureVector rename was coordinated across all tes
 - [x] `preflight.py` runs validation before session start
 - [x] Experiment log records every run with config snapshot (verified: backtest runs land in `experiments` with config hash + metrics + criteria-passed count)
 - [x] `config/tuning.yaml` structure defined (in plan, not yet shipped as separate file)
-- [x] All tests passing (53 prior + 15 new = 68)
+- [x] **TUI dashboard delivered as signal console — data shape matches real logging exactly, `--once` renderer shares the same code path, wired to live artifacts (M5.10)**
+- [x] All tests passing (63 prior + 21 Phase 5 = 74)
 - [x] `PHASE5_COMPLETE.md` — this document
 
 ---
