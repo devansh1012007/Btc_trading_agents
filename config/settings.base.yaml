@@ -17,13 +17,14 @@ data:
   lookback_bars: 100
 
 ###############################################################################
-# FEATURE ENGINE (Phase 1/2 -- unchanged; period constants stay in
-# feature_engine.py itself, out of Phase 3's scope. See PHASE3_COMPLETE.md
-# "Deliberate Design Decisions" for why this wasn't retrofitted.)
+# FEATURE ENGINE (Phase 5: now actually wired to code. Periods are
+# config-driven with period-agnostic field names: short/medium/long.
+# Changing a period changes what that field computes — the name no longer
+# lies about the horizon.)
 ###############################################################################
-features:
-  momentum_periods: [1, 5, 10]
-  volatility_periods: [1, 5, 10]
+feature_engine:
+  momentum_periods: {short: 1, medium: 5, long: 10}
+  volatility_periods: {short: 1, medium: 5}
   rsi_period: 14
   sma_periods: [9, 21]
   volume_zscore_period: 20
@@ -56,7 +57,7 @@ regime:
   persistence_window_bars: 20
   persistence_transition_threshold: 0.6
   panic_z_threshold: 3.0
-  observation_features: [momentum_5m, momentum_10m, volatility_5m, volatility_10m, volume_zscore]
+  observation_features: [momentum_medium, momentum_long, volatility_medium, volatility_long, volume_zscore]
 
 ###############################################################################
 # TRIPLE-BARRIER LABELING (Phase 3, §5)

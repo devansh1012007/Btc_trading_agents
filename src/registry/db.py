@@ -9,6 +9,7 @@ sqlite3.connect() and CREATE TABLE IF NOT EXISTS.
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Optional
 
 DEFAULT_DB_PATH = "data/registry.db"
 
@@ -69,6 +70,17 @@ CREATE TABLE IF NOT EXISTS orders (
     created_at TEXT,
     updated_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS experiments (
+    experiment_id TEXT PRIMARY KEY,
+    run_type TEXT NOT NULL,          -- "backtest" | "training"
+    started_at TEXT NOT NULL,
+    config_hash TEXT NOT NULL,       -- content hash of the config used
+    config_snapshot TEXT NOT NULL,   -- the actual YAML config (truncated)
+    component TEXT,                  -- component name (e.g. "router", "full_stack")
+    metrics_json TEXT,               -- JSON of resulting metrics
+    git_commit TEXT                  -- git commit if available
+);
 """
 
 
@@ -89,3 +101,37 @@ def connect(db_path: str = DEFAULT_DB_PATH):
         conn.commit()
     finally:
         conn.close()
+
+
+def log_experiment(
+    run_type: str,
+    config: dict,
+    metrics: Optional[dict] = None,
+    component: Optional[str] = None,
+    git_commit: Optional[str] = None,
+    db_path: str = DEFAULT_DB_PATH,
+) -> str:
+    """Log a backtest or training run to the experiments table."""
+    import hashlib
+    from datetime import datetime, timezone
+
+    # Compute config hash
+    config_str = yaml.dump(config, default_flow_style=False)
+    config_hash = hashlib.sha256(config_str.encode()).hexdigest()[:16]
+
+    # Truncate config snapshot (store first 4000 chars)
+    config_snapshot = config_str[:4000]
+
+    experiment_id = f"exp_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{hashlib.md5(config_hash.encode()).hexdigest()[:8]}"
+    metrics_json = json.dumps(metrics) if metrics else None
+
+    with connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO experiments (experiment_id, run_type, started_at, config_hash, "
+            "config_snapshot, component, metrics_json, git_commit) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (experiment_id, run_type, datetime.now(timezone.utc).isoformat(),
+             config_hash, config_snapshot, component, metrics_json, git_commit),
+        )
+
+    return experiment_id

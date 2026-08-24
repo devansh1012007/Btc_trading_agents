@@ -20,8 +20,8 @@ Maintains a `RollingBarBuffer(maxlen=100)` of bar dicts. Computes:
 
 | Feature | Formula |
 |---|---|
-| `momentum_30s/5m/10m` | Return over N periods |
-| `volatility_30s/5m/10m` | Std of returns over N periods |
+| `momentum_short/medium/long` | Return over N periods |
+| `volatility_short/medium/long` | Std of returns over N periods |
 | `returns_5` | 5-bar return |
 | `rsi_14` | Relative Strength Index (14-period) |
 | `macd_signal` | MACD signal line |
@@ -30,7 +30,9 @@ Maintains a `RollingBarBuffer(maxlen=100)` of bar dicts. Computes:
 | `orderflow_momentum` | Cumulative delta momentum |
 | `volume_zscore` | Volume z-score over 20 bars |
 
-**Known bug**: `volatility_30s` (periods=1) computes `np.std()` over a single-element array, which is always 0.0. Triple-barrier labeling avoids this by using `volatility_5m` via `barrier_volatility_pct()`. The bug is documented in `PHASE3_COMPLETE.md` and left unfixed in `FeatureEngine` because fixing it requires touching already-tested Phase 1/2 code.
+**Phase 5**: Periods are now read from `feature_engine.momentum_periods.{short,medium,long}` and `feature_engine.volatility_periods.{short,medium}` in config. Previously hardcoded.
+
+**Known bug**: `volatility_short` (periods=1) computes `np.std()` over a single-element array, which is always 0.0. Triple-barrier labeling avoids this by using `volatility_medium` via `barrier_volatility_pct()`. The bug is documented in `PHASE3_COMPLETE.md` and left unfixed in `FeatureEngine` because fixing it requires touching already-tested Phase 1/2 code.
 
 Requires 10+ bars before producing output. Returns `None` during warmup.
 
@@ -51,7 +53,7 @@ Distilled from smoothed offline HMM labels. Served causally.
 ### Fallback Chain
 
 ```
-LightGBM classifier → HMM filter → rule-based (momentum thresholds)
+LightGBM classifier (granularity check, feature_version check) → HMM filter → rule-based (momentum thresholds)
 ```
 
 Always available even with no trained models present. Each step checks `granularity` mismatch and falls through.
@@ -195,6 +197,17 @@ Capped at `max_position_pct_of_equity` (20%). Reduced by:
 ### ML Risk Blend
 
 Optional `P(stop-out)` model. Blend weight controlled by `risk.ml_model.blend_weight` (default 0.25).
+
+### Trade Rate Limiting (Phase 5)
+
+Two rate limits enforced in `evaluate()`:
+
+| Limit | Config | Enforcement |
+|---|---|---|
+| `max_trades_per_hour` | Rolling 1-hour window | Rejects if count ≥ limit |
+| `min_bars_between_orders` | Minimum bar gap | Rejects if bars since last order < limit |
+
+Both read from `breaker_cfg` in config. `risk_layer.record_trade(timestamp)` is called after successful execution.
 
 ### Important: Never Called for Exits
 

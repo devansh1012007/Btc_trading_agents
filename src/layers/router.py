@@ -13,7 +13,7 @@ from typing import Dict, Optional
 
 import numpy as np
 
-from ..state.contracts import ExpertOutputs, RegimeState, ZoneMap, OpportunityScore, RouterDecision, ExpertAction
+from ..state.contracts import ExpertOutputs, RegimeState, ZoneMap, OpportunityScore, RouterDecision, ExpertAction, FEATURE_SCHEMA_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +81,14 @@ class Router:
             logger.warning(
                 f"Router model trained on granularity={trained_granularity}, "
                 f"running on {self.data_granularity}. Falling back to confidence-based mode."
+            )
+            return
+
+        trained_feature_version = payload.get("feature_version")
+        if trained_feature_version is not None and trained_feature_version != FEATURE_SCHEMA_VERSION:
+            logger.warning(
+                f"Router model trained on feature_schema={trained_feature_version}, "
+                f"current schema={FEATURE_SCHEMA_VERSION}. Falling back to confidence-based mode."
             )
             return
 

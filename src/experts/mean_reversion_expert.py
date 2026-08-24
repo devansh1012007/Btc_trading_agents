@@ -15,7 +15,7 @@ from .base_expert import BaseExpert, compute_invalidation_distance
 
 logger = logging.getLogger(__name__)
 
-FEATURE_NAMES = ["rsi_14", "zone_strength", "zone_age", "zone_proximity_pct", "regime_confidence", "volatility_5m"]
+FEATURE_NAMES = ["rsi_14", "zone_strength", "zone_age", "zone_proximity_pct", "regime_confidence", "volatility_medium"]
 
 
 def build_features(fv: FeatureVector, zones: ZoneMap, regime: RegimeState, direction: int) -> Dict[str, float]:
@@ -27,7 +27,7 @@ def build_features(fv: FeatureVector, zones: ZoneMap, regime: RegimeState, direc
     return {
         "rsi_14": fv.rsi_14, "zone_strength": zone_strength, "zone_age": zone_age,
         "zone_proximity_pct": zone_proximity_pct, "regime_confidence": regime.regime_confidence,
-        "volatility_5m": fv.volatility_5m,
+        "volatility_medium": fv.volatility_medium,
     }
 
 

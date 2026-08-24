@@ -94,7 +94,7 @@ class TradingPipeline:
             system_cfg.get("exchange", exchange_name), system_cfg.get("sandbox", sandbox)
         )
 
-        self.feature_engine = FeatureEngine(lookback_bars=data_cfg.get("lookback_bars", 100))
+        self.feature_engine = FeatureEngine(lookback_bars=data_cfg.get("lookback_bars", 100), config=self.config)
 
         self.regime_detector = RegimeDetector(
             hmm_model_path=models_cfg.get("regime_hmm", "data/models/regime_hmm.pkl"),

@@ -18,10 +18,11 @@ This order is **enforced** in `TradingPipeline._process_bar()` and must not chan
 1. **Regime before structure** — zones need `RegimeState.regime_relevance` at the moment they're touched.
 2. **Structural features merged back** into `FeatureVector` before experts see them.
 3. **Risk layer only for new entries** — exits (TP/SL/timeout) are checked in `run.py` before `RiskLayer.evaluate()` is called.
+4. **Decision tracing** — every bar produces a `DecisionTrace` with `StageResult` per stage. Written to `data/logs/decision_traces/` as partitioned JSONL.
 
 ## Two-Pass Liquidity Design
 
-A chicken-and-egg problem exists: the synthetic liquidity model needs `volatility_5m` from the `FeatureVector`, but the `FeatureVector` computation needs a `MarketSnapshot` with bid/ask/depth fields.
+A chicken-and-egg problem exists: the synthetic liquidity model needs `volatility_medium` from the `FeatureVector`, but the `FeatureVector` computation needs a `MarketSnapshot` with bid/ask/depth fields.
 
 **Resolution** (Phase 4, §4.2):
 1. `MarketDataLayer.create_from_bar()` creates snapshot with crude bid/ask placeholders (mid×0.999/mid×1.001, zero depth).
@@ -37,6 +38,14 @@ Every trainable model carries a `granularity` field in its pickle payload. At lo
 
 **Affected models**: Regime HMM, regime classifier, zone survival, all 3 experts, opportunity filter, router.
 
+## Feature Schema Guard (Phase 5)
+
+Every trainable model also carries a `feature_version` field in its pickle payload. At load time, the layer checks it against `FEATURE_SCHEMA_VERSION` (currently `"v2_renamed"`) from `contracts.py`. A mismatch is treated as if the model file were absent — the layer falls back to rule-based behavior.
+
+This catches the case where FeatureVector field names changed (Phase 5 rename: `momentum_5m` → `momentum_medium`, etc.) but old models still reference the old names. Without this guard, `getattr(fv, "momentum_5m", 0.0)` would silently return 0.0.
+
+**Affected models**: All models trained before Phase 5 will fall back to rule-based mode until manually retrained.
+
 ## Shared State Contract
 
 All layers read/write through frozen dataclasses defined in `src/state/contracts.py`. This is the single source of truth — no layer invents its own format. Every bar produces one `SystemState` containing all layer outputs.
@@ -49,6 +58,7 @@ Layered YAML: `settings.base.yaml` (full config) merged with `settings.{env}.yam
 - Training/backtest scripts from Phase 2/3 read `settings.base.yaml` directly via `--config`.
 - `execution.mode` in the env overlay controls the backend: `paper_sim` | `paper_live` | `live`.
 - **Live trading requires BOTH** `execution.mode: "live"` AND `execution.confirm_real_money: true`. A single `--env live` is never enough.
+- **Hot-reload**: `feature_engine`, `risk.circuit_breakers`, `labeling`, and `opportunity_filter.hard_rules` can be reloaded without restart via `ConfigWatcher`. `execution.mode`, `execution.confirm_real_money`, and `system.sandbox` are excluded — they require a restart.
 
 ## Training Scripts
 
@@ -65,7 +75,7 @@ All training scripts replay historical OHLCV through `replay_full_stack()` — t
 | `train_router.py` | Hindsight: which expert would have been best | LightGBM (multiclass) |
 | `train_risk_model.py` | Stop-loss vs (take-profit/timeout) | LightGBM |
 
-All models are pickle-serialized with `granularity` field and `.meta.json` model cards containing walk-forward fold metrics.
+All models are pickle-serialized with `granularity`, `feature_version`, and `.meta.json` model cards containing walk-forward fold metrics.
 
 ## Walk-Forward Splits
 
@@ -80,10 +90,43 @@ SQLite-backed lifecycle: `pending_approval` → `approved_active` → `supersede
 - `rollback_model.py` restores a previous `approved_active` version.
 - `get_champion()` compares walk-forward metrics against the current champion; `retrain_all.py` registers challengers that clear the `promotion_margin_pct` threshold.
 
+## Decision Tracing (Phase 5)
+
+Every bar produces a `DecisionTrace` with `StageResult` for each stage:
+
+```python
+@dataclass(frozen=True)
+class StageResult:
+    stage_name: str          # "trend_expert_gate", "opportunity_filter", "router", "risk_layer"
+    passed: bool
+    detail: str              # human-readable: "momentum 0.03% below threshold 0.05%"
+    values: Dict[str, float] # actual numbers, for reproducibility
+
+@dataclass(frozen=True)
+class DecisionTrace:
+    timestamp: int
+    symbol: str
+    stages: List[StageResult]     # every stage the bar passed through, in order
+    terminal_stage: str            # where the journey ended
+    terminal_reason: str
+```
+
+Written to `data/logs/decision_traces/` as partitioned JSONL (high volume, append-only, read with pandas). Kept separate from the trade journal (completed trades only) and the full `SystemState` Parquet archive (complete numeric record, optimized for training) — this is specifically the human-readable "why" narrative, optimized for debugging.
+
+## Regime-Adaptive Config (Phase 5)
+
+One unified mechanism for all regime-dependent thresholds:
+
+```python
+def resolve_regime_param(param_block: dict, current_regime: RegimeType) -> float:
+    return param_block.get("by_regime", {}).get(current_regime.name, param_block["default"])
+```
+
+Used for: risk sizing, circuit breaker sensitivity, TP/SL barriers, opportunity filter thresholds. Replaces the two independently-written patterns (`regime_specific_barriers` in labeling, `regime_overrides` in opportunity filter).
+
 ## Known Limitations
 
-1. `max_trades_per_hour` and `min_bars_between_orders` are configured in `settings.base.yaml` but **not enforced** in code.
-2. `LiveBackend` and `reconciliation.py` tested against mocks only, never a real exchange.
-3. `run_live_loop()` in `run.py` is a documented structural stub.
-4. `volatility_30s` is always 0.0 (std of single-element array) — triple-barrier labeling uses `volatility_5m` instead via `barrier_volatility_pct()`.
-5. Synthetic liquidity defaults may disagree with Opportunity Filter thresholds (needs real spread data for calibration).
+1. **`consecutive_losses_hard` breaker is dead**: Configured as `consecutive_losses_hard_halt: 6` in `settings.base.yaml`, but no production code ever calls `trip("consecutive_losses_hard")`. The consistency validator (`validate_config_consistency.py`) catches this and logs a warning.
+2. **Pre-rename models fall back to rule-based**: All models trained before Phase 5 have `feature_version` pre-rename. They will silently fall back to rule-based mode until manually retrained.
+3. **`max_concurrent_positions > 1`**: Raises a clear error if configured to > 1. Real multi-position support is a named future item.
+4. **Synthetic liquidity defaults may disagree with Opportunity Filter thresholds**: Needs real spread data from `paper_live` mode for calibration.

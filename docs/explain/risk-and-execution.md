@@ -22,6 +22,8 @@ Five independently tripped/reset breakers, all persisted in SQLite (`data/regist
 | `daily_loss_limit` | Daily loss ≥ 2% | Auto (new day) | Yes |
 | `data_staleness` | No heartbeat for 120s | Auto (heartbeat resumes) | Yes |
 
+**Note**: `consecutive_losses_hard` is configured but **never tripped by production code**. The consistency validator (`validate_config_consistency.py`) catches this and logs a warning.
+
 #### `RiskStateStore`
 
 SQLite-backed state. Context-managed connections with auto-commit.
@@ -77,6 +79,17 @@ After `consecutive_losses_soft_pause` (3) consecutive losses, size is halved. Re
 ### ML Risk Blend
 
 Optional `P(stop-out)` model. Blend weight: 0.25 (25% model, 75% hard rules + liquidity curve). Same granularity guard as other models.
+
+### Trade Rate Limiting (Phase 5)
+
+Two rate limits enforced in `RiskLayer.evaluate()`:
+
+| Limit | Config | Enforcement |
+|---|---|---|
+| `max_trades_per_hour` | Rolling 1-hour window | Rejects if count ≥ limit |
+| `min_bars_between_orders` | Minimum bar gap | Rejects if bars since last order < limit |
+
+Both read from `breaker_cfg` in config. `risk_layer.record_trade(timestamp)` is called after successful execution to update the rolling window.
 
 ### Important: Never Called for Exits
 
@@ -146,6 +159,8 @@ Pure historical/backtest simulation. Liquidity from snapshot's synthetic liquidi
 
 Real order book for liquidity (via `fetch_real_liquidity()`), but simulated fills. Meaningfully better validation before touching real capital. Falls back to snapshot's liquidity on network failure.
 
+**Phase 5**: Logs paired (synthetic, real) liquidity samples to Parquet for `calibrate_synthetic_liquidity.py`.
+
 ### Live (`src/execution/backends/live_backend.py`)
 
 Real CCXT `create_order`. Three independent safety gates:
@@ -197,7 +212,7 @@ def reconcile(connector, symbol, db_path):
             })
 ```
 
-Tested against mocked exchange (`test_reconciliation_detects_drift`). Never exercised against a real exchange.
+Tested against mocked exchange (`test_reconciliation_detects_drift`). Use `scripts/validate_live_backend.py --testnet` to validate against a real testnet exchange.
 
 ## Position Lifecycle (`scripts/run.py`)
 
@@ -213,15 +228,63 @@ for snapshot in snapshots:
             equity += exit_info["realized_pnl_usdt"]
             open_position = None
     
-    # 2. Only look for NEW entry if nothing open
+    # 2. Enforce max_concurrent_positions from config
+    if max_concurrent == 1 and open_position is not None:
+        risk_layer.advance_bar()
+        continue
+    
+    # 3. Only look for NEW entry if nothing open
     if open_position is None and state.router_decision is not None:
         risk_decision = risk_layer.evaluate(...)
         if risk_decision.approved:
             execution_record = execution_engine.place_order(...)
             if execution_record.status in ("filled", "partial"):
+                risk_layer.record_trade(state.timestamp)
                 open_position = OpenPosition(...)
 ```
 
-### Live Mode
+### Live Mode (Phase 5)
 
-`run_live_loop()` is a **documented structural stub** — it sets up reconciliation and kill-switch check, then explicitly declines to synthesize a working live poll loop against a feed that doesn't exist in this environment. The actual per-bar logic can be lifted from `run_historical()`'s loop body.
+`run_live_loop()` is now a **real implementation** — not a stub. It:
+
+1. Fetches latest OHLCV bar via connector
+2. Runs through the full pipeline
+3. Builds decision traces for every bar
+4. Respects all circuit breakers and rate limits
+5. Checks kill switch first every iteration
+6. Logs faults to `data/logs/faults.jsonl` on exception
+
+## Max Concurrent Positions (Phase 5)
+
+`max_concurrent_positions` is now enforced from config:
+
+- If `> 1`: raises `ValueError` at startup (real multi-position support is a future item)
+- If `== 1`: skips new entry checks if `open_position is not None`
+
+## Decision Tracing (Phase 5)
+
+Every bar produces a `DecisionTrace` with `StageResult` per stage:
+
+```python
+@dataclass(frozen=True)
+class StageResult:
+    stage_name: str          # "trend_expert_gate", "opportunity_filter", "router", "risk_layer"
+    passed: bool
+    detail: str              # human-readable: "momentum 0.03% below threshold 0.05%"
+    values: Dict[str, float] # actual numbers, for reproducibility
+
+@dataclass(frozen=True)
+class DecisionTrace:
+    timestamp: int
+    symbol: str
+    stages: List[StageResult]     # every stage the bar passed through, in order
+    terminal_stage: str            # where the journey ended
+    terminal_reason: str
+```
+
+Written to `data/logs/decision_traces/` as partitioned JSONL. Query with:
+
+```bash
+python scripts/diagnose.py --timestamp 1755900000
+python scripts/diagnose.py --summary --since 2026-08-01
+```

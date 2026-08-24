@@ -58,7 +58,7 @@ def replay_full_stack(
     liquidity_cfg = config.get("liquidity", {}).get("synthetic", {})
     data_granularity = system_cfg.get("data_granularity", "1m")
 
-    feature_engine = FeatureEngine(lookback_bars=data_cfg.get("lookback_bars", 100))
+    feature_engine = FeatureEngine(lookback_bars=data_cfg.get("lookback_bars", 100), config=config)
     regime_detector = RegimeDetector(
         hmm_model_path=models_cfg.get("regime_hmm", "data/models/regime_hmm.pkl"),
         classifier_model_path=models_cfg.get("regime_classifier", "data/models/regime_classifier.pkl"),

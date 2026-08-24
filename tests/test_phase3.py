@@ -31,13 +31,13 @@ def make_snapshot(timestamp, open_, high, low, close, volume=100.0, symbol="BTC/
         spread_pct=0.01, hour_utc=12, day_of_week=2,
     )
 
+def make_feature_vector(timestamp=0, momentum_medium=0.0, momentum_long=0.0, volatility_medium=0.1, volatility_long=0.1,
 
-def make_feature_vector(timestamp=0, momentum_5m=0.0, momentum_10m=0.0, volatility_5m=0.1, volatility_10m=0.1,
-                         volatility_30s=0.05, momentum_30s=0.0, spread_pct=0.01, symbol="BTC/USDT"):
+                         volatility_short=0.05, momentum_short=0.0, spread_pct=0.01, symbol="BTC/USDT"):
     return FeatureVector(
-        timestamp=timestamp, symbol=symbol, momentum_30s=momentum_30s, momentum_5m=momentum_5m,
-        volatility_30s=volatility_30s, volatility_5m=volatility_5m, returns_5=0.0, rsi_14=50.0, macd_signal=0.0,
-        sma_9=101.0, sma_21=100.0, momentum_10m=momentum_10m, volatility_10m=volatility_10m,
+        timestamp=timestamp, symbol=symbol, momentum_short=momentum_short, momentum_medium=momentum_medium,
+        volatility_short=volatility_short, volatility_medium=volatility_medium, returns_5=0.0, rsi_14=50.0, macd_signal=0.0,
+        sma_9=101.0, sma_21=100.0, momentum_long=momentum_long, volatility_long=volatility_long,
         imbalance_ratio=0.5, orderflow_momentum=0.0, spread_pct=spread_pct, depth_10_level=100.0,
         raw_features={"volume_zscore": 0.0},
     )
@@ -143,7 +143,7 @@ def test_triple_barrier_no_lookahead():
 
 def test_expert_gate_determinism():
     expert = TrendExpert(config=TREND_CFG, model_path=None)
-    fv = make_feature_vector(momentum_5m=0.2)
+    fv = make_feature_vector(momentum_medium=0.2)
     regime = make_regime_state(RegimeType.TRENDING_UP, confidence=0.8, persistence=0.8)
     zones = make_zone_map()
 
@@ -161,10 +161,10 @@ def test_expert_no_candidate_skips_model():
 
     expert._model = ExplodingModel()
     expert.use_fallback_mode = False
-    expert._model_feature_names = ["momentum_5m", "momentum_10m", "sma_slope", "invalidation_distance",
-                                    "regime_confidence", "regime_persistence_score", "volatility_5m"]
+    expert._model_feature_names = ["momentum_medium", "momentum_long", "sma_slope", "invalidation_distance",
+                                    "regime_confidence", "regime_persistence_score", "volatility_medium"]
 
-    fv = make_feature_vector(momentum_5m=0.001)  # below momentum_threshold -> gate returns None
+    fv = make_feature_vector(momentum_medium=0.001)  # below momentum_threshold -> gate returns None
     regime = make_regime_state(RegimeType.TRENDING_UP, confidence=0.8, persistence=0.8)
     zones = make_zone_map()
 
@@ -177,7 +177,7 @@ def test_expert_fallback_without_model_file():
     expert = TrendExpert(config=TREND_CFG, model_path="data/models/experts/does_not_exist.pkl")
     assert expert.use_fallback_mode is True
 
-    fv = make_feature_vector(momentum_5m=0.2)
+    fv = make_feature_vector(momentum_medium=0.2)
     regime = make_regime_state(RegimeType.TRENDING_UP, confidence=0.8, persistence=0.8)
     zones = make_zone_map()
 
@@ -190,7 +190,7 @@ def test_expert_granularity_mismatch_fallback(tmp_path):
     model_path = tmp_path / "trend_expert.pkl"
     with open(model_path, "wb") as f:
         pickle.dump({
-            "model": object(), "feature_names": ["momentum_5m"], "granularity": "30s",
+            "model": object(), "feature_names": ["momentum_medium"], "granularity": "30s",
             "avg_favorable_return": 0.1, "avg_unfavorable_return": -0.1, "avg_adverse_excursion": 0.1,
         }, f)
 
@@ -358,7 +358,7 @@ def test_timeframe_adaptation():
     assert all(e.data_granularity == "30s" for e in experts.values())
     assert all(e.use_fallback_mode for e in experts.values())  # no models trained yet
 
-    fv = make_feature_vector(momentum_5m=0.2)
+    fv = make_feature_vector(momentum_medium=0.2)
     regime = make_regime_state(RegimeType.TRENDING_UP, confidence=0.8, persistence=0.8)
     zones = make_zone_map()
 

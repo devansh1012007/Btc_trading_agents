@@ -110,24 +110,24 @@ class TestFeatureEngine:
         fv = FeatureVector(
             timestamp=1000000,
             symbol="BTC/USDT",
-            momentum_30s=2.5,
-            momentum_5m=1.2,
-            volatility_30s=0.8,
-            volatility_5m=1.1,
+            momentum_short=2.5,
+            momentum_medium=1.2,
+            volatility_short=0.8,
+            volatility_medium=1.1,
             returns_5=0.5,
             rsi_14=55.0,
             macd_signal=10.0,
             sma_9=50100,
             sma_21=50050,
-            momentum_10m=0.3,
-            volatility_10m=1.5,
+            momentum_long=0.3,
+            volatility_long=1.5,
             imbalance_ratio=0.5,
             orderflow_momentum=1.0,
             spread_pct=0.04,
             depth_10_level=100000,
         )
         
-        assert fv.momentum_30s == 2.5
+        assert fv.momentum_short == 2.5
         assert fv.timestamp == 1000000
     
     def test_feature_engine_requires_history(self):

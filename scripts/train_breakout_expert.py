@@ -97,6 +97,7 @@ def main():
     unfavorable = df[df["label"] == 0]["realized_return_pct"]
     payload = {
         "model": model, "feature_names": FEATURE_NAMES, "granularity": data_granularity,
+        "feature_version": "v2_renamed",
         "avg_favorable_return": float(favorable.mean()) if len(favorable) else 0.0,
         "avg_unfavorable_return": float(unfavorable.mean()) if len(unfavorable) else 0.0,
         "avg_adverse_excursion": float(df["max_adverse_excursion_pct"].mean()) if len(df) else 0.0,

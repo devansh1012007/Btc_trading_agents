@@ -8,7 +8,7 @@ Feature-conditioned spread/depth proxy for backtesting. Historical replay has no
 
 ### Two-Pass Design
 
-The synthetic liquidity model needs `volatility_5m` from the `FeatureVector`, but the `FeatureVector` computation needs a `MarketSnapshot` with bid/ask/depth fields. Resolution:
+The synthetic liquidity model needs `volatility_medium` from the `FeatureVector`, but the `FeatureVector` computation needs a `MarketSnapshot` with bid/ask/depth fields. Resolution:
 
 1. `MarketDataLayer.create_from_bar()` creates snapshot with crude placeholders.
 2. Feature engine computes `FeatureVector`.
@@ -20,7 +20,7 @@ The structure engine already consumed the pre-liquidity snapshot, which is safe 
 ### Model
 
 ```python
-spread_pct = base_spread_pct + k_volatility * volatility_5m + k_illiquidity / max(volume_zscore, min_volume_zscore_floor)
+spread_pct = base_spread_pct + k_volatility * volatility_medium + k_illiquidity / max(volume_zscore, min_volume_zscore_floor)
 bid_volume = k_depth * bar_volume * depth_participation_rate
 ask_volume = bid_volume  # Symmetric
 ```
@@ -163,7 +163,9 @@ Parquet files partitioned by date. `load_ohlcv_local()` glob-matches `{symbol}_{
 
 ## Calibration (`scripts/calibrate_synthetic_liquidity.py`)
 
-OLS regression to fit liquidity model coefficients against real-vs-synthetic samples. Needs paired data (real order book vs. synthetic estimate) that `paper_live` mode would produce. Script itself works — wiring `paper_live` mode to actually write that log is a natural follow-on.
+OLS regression to fit liquidity model coefficients against real-vs-synthetic samples. Needs paired data (real order book vs. synthetic estimate) that `paper_live` mode produces.
+
+**Phase 5**: `PaperLiveBackend` now logs paired (synthetic, real) liquidity samples to Parquet. Run `paper_live` mode for a stretch (at minimum a few hundred bars across varied conditions), then run the calibration script. Only after calibration produces fitted coefficients does `opportunity_filter.hard_rules.max_spread_pct` get revisited.
 
 ## Known Issues
 

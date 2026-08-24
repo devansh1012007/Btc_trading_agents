@@ -20,14 +20,8 @@ logger = logging.getLogger(__name__)
 
 from src.layers.market_data import MarketDataLayer
 from src.layers.feature_engine import FeatureEngine
-from src.layers.regime_detector import panic_score, HMM_STATE_LABELS, HMM_OBSERVATION_FEATURES
+from src.layers.regime_detector import panic_score, HMM_STATE_LABELS, HMM_OBSERVATION_FEATURES, CLASSIFIER_FEATURE_NAMES
 from src.backtest.walk_forward import WalkForwardSplitter
-
-CLASSIFIER_FEATURE_NAMES = [
-    "momentum_30s", "momentum_5m", "momentum_10m", "volatility_30s", "volatility_5m", "volatility_10m",
-    "returns_5", "rsi_14", "macd_signal", "sma_9", "sma_21", "imbalance_ratio", "orderflow_momentum",
-    "spread_pct", "depth_10_level",
-]
 
 
 def load_config(path: str = "config/settings.base.yaml") -> dict:
@@ -103,8 +97,8 @@ def fit_final_hmm(X: np.ndarray, n_states: int = 3):
 
 def map_states_to_labels(model, X: np.ndarray) -> Dict[int, str]:
     hidden_states = model.predict(X)
-    momentum_col = HMM_OBSERVATION_FEATURES.index("momentum_5m")
-    volatility_col = HMM_OBSERVATION_FEATURES.index("volatility_5m")
+    momentum_col = HMM_OBSERVATION_FEATURES.index("momentum_medium")
+    volatility_col = HMM_OBSERVATION_FEATURES.index("volatility_medium")
 
     stats = []
     for state in range(model.n_components):
@@ -138,8 +132,8 @@ def _rolling_zscore(series: np.ndarray, window: int = 100) -> np.ndarray:
 
 def build_regime_labels(model, mapping: Dict[int, str], X: np.ndarray, panic_z_threshold: float) -> np.ndarray:
     posteriors = model.predict_proba(X)
-    momentum_col = HMM_OBSERVATION_FEATURES.index("momentum_5m")
-    volatility_col = HMM_OBSERVATION_FEATURES.index("volatility_5m")
+    momentum_col = HMM_OBSERVATION_FEATURES.index("momentum_medium")
+    volatility_col = HMM_OBSERVATION_FEATURES.index("volatility_medium")
     volume_col = HMM_OBSERVATION_FEATURES.index("volume_zscore")
 
     vol_z = _rolling_zscore(X[:, volatility_col])
@@ -227,6 +221,7 @@ def main():
         "means": hmm_model.means_, "covars": hmm_model.covars_,
         "state_to_label": state_to_label, "feature_names": HMM_OBSERVATION_FEATURES,
         "n_components": hmm_model.n_components, "granularity": data_granularity,
+        "feature_version": "v2_renamed",
     }
     hmm_output_path = Path(args.hmm_output)
     hmm_output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -255,7 +250,8 @@ def main():
     )
     classifier, fold_metrics = train_classifier(feat_df, labels, splitter)
 
-    clf_payload = {"model": classifier, "feature_names": CLASSIFIER_FEATURE_NAMES, "granularity": data_granularity}
+    clf_payload = {"model": classifier, "feature_names": CLASSIFIER_FEATURE_NAMES, "granularity": data_granularity,
+                   "feature_version": "v2_renamed"}
     clf_output_path = Path(args.classifier_output)
     clf_output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(clf_output_path, "wb") as f:

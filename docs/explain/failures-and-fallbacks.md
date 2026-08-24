@@ -6,6 +6,7 @@
 |---|---|---|
 | **Model absence** | Regime, Structure, Experts, Opportunity Filter, Router, Risk | Rule-based fallback |
 | **Model mismatch** | All trainable models | Granularity guard → fallback |
+| **Feature schema mismatch** | All trainable models | `feature_version` guard → fallback (Phase 5) |
 | **Model inference error** | All ML models | Catch exception → fallback |
 | **Network failure** | CCXT connector, real orderbook adapter | Retry with backoff, fallback to synthetic |
 | **Exchange API failure** | LiveBackend order placement | Record as rejected, increment error counter |
@@ -21,7 +22,7 @@ Every trainable model follows the same pattern: try model → if absent/mismatch
 ### Regime Detector
 
 ```
-LightGBM classifier (granularity check)
+LightGBM classifier (granularity check, feature_version check)
     → HMM filter (self-contained numpy, no hmmlearn dependency)
     → Rule-based (momentum thresholds)
 ```
@@ -42,7 +43,7 @@ If zone survival model is absent or granularity mismatch → pure rule-based sur
 ```
 propose_candidate() → None → NO_TRADE (model never called)
 propose_candidate() → action → score()
-    → LightGBM model (granularity check)
+    → LightGBM model (granularity check, feature_version check)
     → Config fallback (fallback_confidence, fallback_expected_return, fallback_expected_risk)
 ```
 
@@ -67,7 +68,7 @@ Model absent → pure hard rules. Model inference error → pure hard rules. Mod
 ### Router
 
 ```
-ML model (if available, granularity check)
+ML model (if available, granularity check, feature_version check)
     → Highest-confidence expert above confidence_floor
     → no_trade if no expert qualifies
 ```
@@ -80,7 +81,7 @@ Model absent → fallback. Model inference error → fallback.
 Kill switch (file check, zero dependencies)
     → Circuit breakers (SQLite check)
     → Hard rules
-    → ML risk blend (if available, granularity check)
+    → ML risk blend (if available, granularity check, feature_version check)
     → Liquidity curve + soft pause
 ```
 
@@ -128,7 +129,7 @@ If exchange unreachable after retries → aborts live mode with actionable error
 
 ### SQLite Registry
 
-Single file (`data/registry.db`) with 5 tables:
+Single file (`data/registry.db`) with 6 tables:
 
 | Table | Purpose |
 |---|---|
@@ -137,6 +138,7 @@ Single file (`data/registry.db`) with 5 tables:
 | `trade_journal` | Open and closed trades |
 | `model_versions` | Model registry (pending → approved → superseded) |
 | `orders` | Idempotent order tracking |
+| `experiments` | Experiment log (config hash, metrics, git commit) — Phase 5 |
 
 Context-managed connections with auto-commit. Schema auto-created on first connection. Survives process restart.
 
@@ -175,6 +177,10 @@ If no models are trained yet (empty `data/models/`), the system runs in pure fal
 - Router: highest-confidence expert above floor
 
 The system is **fully functional** in fallback mode — it just won't make trades that pass the opportunity filter (which is correct behavior).
+
+### Pre-Phase-5 Models Fall Back (Phase 5)
+
+All models trained before Phase 5 have `feature_version` pre-rename. They will silently fall back to rule-based mode until manually retrained. This is safe — the fallback paths are tested and work correctly.
 
 ## Error Handling Patterns
 
@@ -221,15 +227,31 @@ except Exception as e:
 
 Corrupt parquet files are skipped with a warning, not a crash.
 
+## Decision Tracing (Phase 5)
+
+Every bar produces a `DecisionTrace` with `StageResult` per stage. Written to `data/logs/decision_traces/` as partitioned JSONL.
+
+```bash
+# Full trace for a specific bar
+python scripts/diagnose.py --timestamp 1755900000
+
+# Summary breakdown of all bars
+python scripts/diagnose.py --summary --since 2026-08-01
+```
+
+Categories of failure:
+1. **Decision-layer rejections** — no expert candidate, opportunity filter veto, risk rejection, circuit breaker active. Information, not bugs — but needs to be legible and aggregable.
+2. **System faults** — exception, connectivity failure, stale data feed. Logged to `data/logs/faults.jsonl` with full context.
+
 ## Known Failure Modes
 
-### volatility_30s Always Zero
+### volatility_short Always Near Zero
 
-`FeatureEngine._volatility(prices, periods=1)` computes `np.std()` over a single-element array. The standard deviation of one number is zero by definition. Every training script scaled its barriers by `k_tp/k_sl * volatility_30s`, so every barrier collapsed to zero width.
+`FeatureEngine._volatility(prices, periods=1)` computes `np.std()` over a single-element array. The standard deviation of one number is zero by definition. Every training script scaled its barriers by `k_tp/k_sl * volatility_short`, so every barrier collapsed to zero width.
 
-**Fix applied**: Triple-barrier labeling uses `barrier_volatility_pct()` which uses `volatility_5m` instead. Applied at all six call sites.
+**Fix applied**: Triple-barrier labeling uses `barrier_volatility_pct()` which uses `volatility_medium` instead. Applied at all six call sites.
 
-**Left unfixed**: `FeatureEngine.volatility_30s` itself is unchanged — fixing it is outside Phase 3's stated scope.
+**Left unfixed**: `FeatureEngine.volatility_short` itself is unchanged — fixing it is outside Phase 5's scope.
 
 ### Depth Unit Mismatch (Fixed in Phase 4)
 
@@ -237,14 +259,26 @@ Corrupt parquet files are skipped with a warning, not a crash.
 
 **Fix**: Both `evaluate()`'s hard rule and `_liquidity_score()` now multiply by `market.close` before comparing.
 
-### max_trades_per_hour Not Enforced
+### consecutive_losses_hard Breaker Is Dead
 
-Configured in `settings.base.yaml` (`max_trades_per_hour: 10`) but not enforced anywhere in code. `max_concurrent_positions: 1` IS enforced, but implicitly (via `run.py`'s single `open_position` variable), not by reading the config value.
+Configured as `consecutive_losses_hard_halt: 6` in `settings.base.yaml`, but no production code ever calls `trip("consecutive_losses_hard")`. The consistency validator (`validate_config_consistency.py`) catches this and logs a warning.
 
-### run_live_loop() Is a Stub
+### Feature Schema Mismatch (Phase 5)
 
-`run_live_loop()` in `run.py` sets up reconciliation and kill-switch check, then explicitly declines to synthesize a working live poll loop. The actual per-bar logic can be lifted from `run_historical()`'s loop body. This is documented honesty, not a bug.
+FeatureVector field names changed in Phase 5: `momentum_5m` → `momentum_medium`, `volatility_5m` → `volatility_medium`, etc. Pre-rename models reference old names. Without the `feature_version` guard, `getattr(fv, "momentum_5m", 0.0)` would silently return 0.0.
+
+**Fix**: All layer model loaders check `feature_version` against `FEATURE_SCHEMA_VERSION`. Pre-rename models fall back to rule-based mode.
+
+### max_concurrent_positions > 1 Raises Error
+
+Configured as `max_concurrent_positions: 1` in `settings.base.yaml`. If set to > 1, `run.py` raises `ValueError` with a clear message. Real multi-position support is a named future item.
+
+### run_live_loop() Is Now Implemented (Phase 5)
+
+`run_live_loop()` in `run.py` is now a real implementation — not a stub. It fetches latest OHLCV bar, runs through the full pipeline, and respects all circuit breakers.
 
 ### LiveBackend Never Tested Against Real Exchange
 
 `LiveBackend` and `reconciliation.py` are structurally complete and unit-tested against a mocked exchange. But "works against a mock" and "works against Binance" are different claims. The safety gates (`test_live_mode_requires_both_flags`) and idempotency logic (`test_execution_idempotent_order_placement`) are real tests against real code paths — but they need real credentials to validate end-to-end.
+
+Use `scripts/validate_live_backend.py --testnet` to run the 5-step testnet validation runbook.

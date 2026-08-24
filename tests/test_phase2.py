@@ -19,13 +19,13 @@ def make_snapshot(timestamp, open_, high, low, close, volume=100.0, symbol="BTC/
         spread_pct=0.01, hour_utc=12, day_of_week=2,
     )
 
+def make_feature_vector(timestamp, momentum_medium=0.0, momentum_long=0.0, volatility_medium=0.1, volatility_long=0.1,
 
-def make_feature_vector(timestamp, momentum_5m=0.0, momentum_10m=0.0, volatility_5m=0.1, volatility_10m=0.1,
-                         volatility_30s=0.05, momentum_30s=0.0, volume_zscore=0.0, symbol="BTC/USDT"):
+                         volatility_short=0.05, momentum_short=0.0, volume_zscore=0.0, symbol="BTC/USDT"):
     return FeatureVector(
-        timestamp=timestamp, symbol=symbol, momentum_30s=momentum_30s, momentum_5m=momentum_5m,
-        volatility_30s=volatility_30s, volatility_5m=volatility_5m, returns_5=0.0, rsi_14=50.0, macd_signal=0.0,
-        sma_9=100.0, sma_21=100.0, momentum_10m=momentum_10m, volatility_10m=volatility_10m,
+        timestamp=timestamp, symbol=symbol, momentum_short=momentum_short, momentum_medium=momentum_medium,
+        volatility_short=volatility_short, volatility_medium=volatility_medium, returns_5=0.0, rsi_14=50.0, macd_signal=0.0,
+        sma_9=100.0, sma_21=100.0, momentum_long=momentum_long, volatility_long=volatility_long,
         imbalance_ratio=0.5, orderflow_momentum=0.0, spread_pct=0.01, depth_10_level=100.0,
         raw_features={"volume_zscore": volume_zscore},
     )
@@ -131,7 +131,7 @@ def test_structural_features_populated():
 
 def test_regime_state_probabilities_sum_to_one():
     detector = RegimeDetector(hmm_model_path="nonexistent.pkl", classifier_model_path="nonexistent2.pkl")
-    fv = make_feature_vector(timestamp=0, momentum_5m=0.2)
+    fv = make_feature_vector(timestamp=0, momentum_medium=0.2)
     detector.add_bar(fv)
     state = detector.compute_regime(fv)
 
@@ -147,7 +147,7 @@ def test_regime_filtering_is_causal():
     detector_full = RegimeDetector(hmm_model_path="nonexistent.pkl", classifier_model_path="nonexistent2.pkl")
     state_at_n = None
     for i, m in enumerate(momentums):
-        fv = make_feature_vector(timestamp=i, momentum_5m=float(m))
+        fv = make_feature_vector(timestamp=i, momentum_medium=float(m))
         detector_full.add_bar(fv)
         state = detector_full.compute_regime(fv)
         if i == n_cutoff:
@@ -156,7 +156,7 @@ def test_regime_filtering_is_causal():
     detector_short = RegimeDetector(hmm_model_path="nonexistent.pkl", classifier_model_path="nonexistent2.pkl")
     state_short = None
     for i, m in enumerate(momentums[:n_cutoff + 1]):
-        fv = make_feature_vector(timestamp=i, momentum_5m=float(m))
+        fv = make_feature_vector(timestamp=i, momentum_medium=float(m))
         detector_short.add_bar(fv)
         state_short = detector_short.compute_regime(fv)
 
@@ -172,7 +172,7 @@ def test_regime_fallback_without_model_file():
         hmm_model_path="data/models/does_not_exist_hmm.pkl",
         classifier_model_path="data/models/does_not_exist_clf.pkl",
     )
-    fv = make_feature_vector(timestamp=0, momentum_5m=0.1)
+    fv = make_feature_vector(timestamp=0, momentum_medium=0.1)
     detector.add_bar(fv)
     state = detector.compute_regime(fv)
 

@@ -16,10 +16,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from ...src.state.contracts import MarketSnapshot, SystemState
-from ...src.layers.market_data import MarketDataLayer
-from ...src.layers.feature_engine import FeatureEngine
-from ...src.state.serialization import system_state_to_dict
+from src.state.contracts import MarketSnapshot, SystemState
+from src.layers.market_data import MarketDataLayer
+from src.layers.feature_engine import FeatureEngine
+from src.state.serialization import system_state_to_dict
 from pathlib import Path
 
 
@@ -83,7 +83,7 @@ def test_end_to_end_pipeline():
     
     # Step 3: Compute features
     logger.info("\nStep 3: Computing features with FeatureEngine...")
-    feature_engine = FeatureEngine(lookback_bars=100)
+    feature_engine = FeatureEngine(lookback_bars=100, config=config)
     system_states = []
     
     for i, snapshot in enumerate(snapshots):
@@ -109,9 +109,9 @@ def test_end_to_end_pipeline():
         state = system_states[-1]
         fv = state.feature_vector
         logger.info(f"  Sample features:")
-        logger.info(f"    momentum_30s: {fv.momentum_30s:.2f}%")
-        logger.info(f"    momentum_5m: {fv.momentum_5m:.2f}%")
-        logger.info(f"    volatility_30s: {fv.volatility_30s:.2f}%")
+        logger.info(f"    momentum_short: {fv.momentum_short:.2f}%")
+        logger.info(f"    momentum_medium: {fv.momentum_medium:.2f}%")
+        logger.info(f"    volatility_short: {fv.volatility_short:.2f}%")
         logger.info(f"    rsi_14: {fv.rsi_14:.2f}")
         logger.info(f"    sma_9: ${fv.sma_9:.2f}, sma_21: ${fv.sma_21:.2f}")
         logger.info(f"    imbalance_ratio: {fv.imbalance_ratio:.4f}")
@@ -141,7 +141,7 @@ def test_end_to_end_pipeline():
     # Check for NaN in critical columns
     critical_cols = [
         'market_close', 'market_spread_pct',
-        'feature_momentum_30s', 'feature_momentum_5m',
+        'feature_momentum_short', 'feature_momentum_medium',
     ]
     
     for col in critical_cols:

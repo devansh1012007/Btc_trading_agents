@@ -148,7 +148,7 @@ def main():
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "wb") as f:
-        pickle.dump({"model": model, "feature_names": FEATURE_NAMES}, f)
+        pickle.dump({"model": model, "feature_names": FEATURE_NAMES, "feature_version": "v2_renamed"}, f)
 
     model_card = {
         "trained_at": datetime.now(timezone.utc).isoformat(), "n_samples": int(len(df)),

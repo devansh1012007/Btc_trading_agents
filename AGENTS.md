@@ -4,37 +4,50 @@
 
 ```
 src/
-  pipeline.py          ← TradingPipeline (main orchestrator)
-  state/contracts.py   ← all shared dataclasses (frozen, single source of truth)
+  pipeline.py              ← TradingPipeline (main orchestrator)
+  state/contracts.py       ← all shared dataclasses (frozen, single source of truth)
   state/serialization.py
-  layers/              ← market_data, feature_engine, regime_detector, structure_engine,
-                         expert_layer, opportunity_filter, router, risk_layer
-  experts/             ← trend, mean_reversion, breakout (+ base_expert, expert_registry)
-  labeling/            ← triple_barrier labeling
-  backtest/            ← replay.py, walk_forward.py
-  execution/           ← execution_engine + paper_sim/paper_live/live backends
-  liquidity/           ← synthetic_liquidity_model
-  registry/            ← model registry (SQLite: pending → approved → superseded)
-  feedback/            ← trade_journal, zone_event_log, system_state_archive
-  monitoring/          ← drift_monitor (PSI), performance_monitor
-  connectors/          ← CCXTConnector
-  alerting/            ← notifier
+  layers/                  ← market_data, feature_engine, regime_detector, structure_engine,
+                             expert_layer, opportunity_filter, router, risk_layer
+  experts/                 ← trend, mean_reversion, breakout (+ base_expert, expert_registry)
+  labeling/                ← triple_barrier labeling
+  backtest/                ← replay.py, walk_forward.py
+  execution/               ← execution_engine + paper_sim/paper_live/live backends
+  liquidity/               ← synthetic_liquidity_model
+  registry/                ← model registry (SQLite: pending → approved → superseded)
+  feedback/                ← trade_journal, zone_event_log, system_state_archive
+  monitoring/              ← drift_monitor (PSI), performance_monitor
+  connectors/              ← CCXTConnector
+  alerting/                ← notifier
+  diagnostics/             ← decision_trace.py (Phase 5: stage-by-stage bar traces)
+  config/                  ← regime_adaptive.py, config_watcher.py (Phase 5)
+    regime_adaptive.py     ← resolve_regime_param() — unified regime-dependent threshold resolution
+    config_watcher.py      ← ConfigWatcher — hot-reload for safe config paths
 config/
-  settings.base.yaml   ← full config (all layers)
-  settings.paper.yaml  ← env overlay (default)
-  settings.live.yaml   ← env overlay
+  settings.base.yaml       ← full config (all layers)
+  settings.paper.yaml      ← env overlay (default)
+  settings.live.yaml       ← env overlay
 scripts/
-  run.py               ← deployment entry (historical replay + live loop)
-  train_*.py           ← per-component training
-  retrain_all.py       ← cron retraining (never auto-promotes)
-  approve_model.py     ← manual promotion in model registry
+  run.py                   ← deployment entry (historical replay + live loop)
+  train_*.py               ← per-component training
+  retrain_all.py           ← cron retraining (never auto-promotes)
+  approve_model.py         ← manual promotion in model registry
   rollback_model.py
   reset_breaker.py
   status.py
+  diagnose.py              ← CLI diagnostics: --timestamp, --trade-id, --summary (Phase 5)
+  validate_config_consistency.py ← pre-flight validation (Phase 5)
+  preflight.py             ← runs consistency checks before session start (Phase 5)
+  validate_live_backend.py ← scripted testnet validation runbook (Phase 5)
 tests/
-  test_phase2.py, test_phase3.py, test_phase4.py
-  Phase1_tests/        ← legacy phase 1 tests
-data/                  ← gitignored: raw/, processed/, models/, logs/
+  test_phase1.py           ← Market data, feature engine
+  test_phase2.py           ← Structure engine + regime detection
+  test_phase3.py           ← Triple-barrier, experts, opportunity filter, router
+  test_phase4.py           ← Risk layer, execution, circuit breakers, registry
+  test_integration.py      ← Full-stack integration
+data/                      ← gitignored: raw/, processed/, models/, logs/
+  logs/decision_traces/    ← partitioned JSONL traces (Phase 5)
+  faults.jsonl             ← system fault records (Phase 5)
 ```
 
 ## Running
@@ -57,6 +70,18 @@ python scripts/run.py --mode historical --input data/raw/BTCUSDT.csv --env paper
 
 # Live loop (requires real credentials + confirm_real_money=true)
 python scripts/run.py --mode live --env live
+
+# Diagnostics: summary of why bars didn't trade
+python scripts/diagnose.py --summary --since 2026-08-01
+
+# Diagnostics: full trace for a specific bar
+python scripts/diagnose.py --timestamp 1755900000
+
+# Pre-flight validation before starting a session
+python scripts/preflight.py --env paper
+
+# Config consistency validation
+python scripts/validate_config_consistency.py
 ```
 
 ## Config system (easy to get wrong)
@@ -67,14 +92,17 @@ python scripts/run.py --mode live --env live
 - `system.data_granularity` (e.g. `"1m"`, `"30s"`) is the **only** switch for timeframe — no code change needed. All layers check it for model-granularity compatibility.
 - `execution.mode` in the env overlay controls the backend: `paper_sim` | `paper_live` | `live`.
 - **Live trading requires BOTH** `execution.mode: "live"` AND `execution.confirm_real_money: true` (guarded by `LiveTradingNotConfirmedError`).
+- **Hot-reload**: `feature_engine`, `risk.circuit_breakers`, `labeling`, and `opportunity_filter.hard_rules` can be reloaded without restart via `ConfigWatcher`. `execution.mode`, `execution.confirm_real_money`, and `system.sandbox` are excluded — they require a restart.
 
 ## ML model quirks
 
 - All models are **pickle-serialized LightGBM** (or HMM from hmmlearn). Paths live in `data/models/`.
 - **Granularity mismatch → fallback mode**: if a model's saved granularity doesn't match `system.data_granularity`, the layer falls back to rule-based behavior (no crash).
+- **Feature schema mismatch → fallback mode**: if a model's saved `feature_version` doesn't match `FEATURE_SCHEMA_VERSION` (currently `"v2_renamed"`), the layer falls back to rule-based behavior. This catches pre-Phase-5 models after the FeatureVector field rename.
 - **Hard rules ALWAYS override ML** in both `OpportunityFilter` and `RiskLayer` — a hard-rule veto beats a model saying "tradable/approved".
 - Models are **never auto-promoted**. `retrain_all.py` produces `pending_approval` versions; `approve_model.py` promotes. `rollback_model.py` restores previous.
 - Walk-forward splits use **purge + embargo** (`WalkForwardSplitter`). Never use random/TimeSeriesSplit — it leaks labels.
+- **Experiment log**: every backtest and training run is logged to `data/registry.db::experiments` with config hash, config snapshot, metrics, and git commit.
 
 ## Pipeline execution order (must not change)
 
@@ -86,13 +114,16 @@ MarketSnapshot → FeatureVector → RegimeState → ZoneMap →
 
 - Regime is computed **before** structure within a single bar (zones need `RegimeState.regime_relevance`).
 - Risk layer is **only called for new entries**, never for position exits. Exit checking (TP/SL/timeout) happens before RiskLayer.evaluate() in `run.py`.
+- **Decision tracing**: every bar produces a `DecisionTrace` with `StageResult` for each stage. Written to `data/logs/decision_traces/` as partitioned JSONL.
 
 ## Key constraints
 
 - **No look-ahead**: every feature is computed only from information available at that bar's timestamp.
-- **One concurrent position max** (`risk.circuit_breakers.max_concurrent_positions: 1`).
+- **One concurrent position max** (`risk.circuit_breakers.max_concurrent_positions: 1`). Enforced in `run.py` — raises `ValueError` if config requests > 1 (real multi-position support is a future item).
+- **Trade rate limiting**: `max_trades_per_hour` (rolling 1-hour window) and `min_bars_between_orders` enforced in `RiskLayer.evaluate()`.
 - **Circuit breakers persist** across restarts (SQLite in `data/registry.db`).
 - **Kill switch**: `data/control/EMERGENCY_STOP` file halts the live loop.
+- **Consistency validation**: `scripts/preflight.py` runs before session start — validates unit consistency, threshold plausibility, breaker enforcement paths, and feature schema version.
 - Tests have **no conftest.py** — all fixtures are inline helper functions in each test file.
 - No lint/typecheck/format config exists. Just `pytest`.
 
@@ -129,3 +160,19 @@ approve_model.py <component> <version_id>
 rollback_model.py <component> <version_id>
   → restores previous version
 ```
+
+## Phase 5 additions
+
+Phase 5 closed all Phase 4 gaps and added diagnostics, adaptive config, and performance intelligence:
+
+- **Decision tracing**: `DecisionTrace` per bar, `StageResult` per stage, `diagnose.py` CLI
+- **Cross-layer consistency**: `validate_config_consistency.py` catches unit mismatches, dead breakers, threshold disagreements
+- **Regime-adaptive config**: `resolve_regime_param()` unifies all regime-dependent thresholds
+- **Hot-reload**: `ConfigWatcher` reloads safe config paths without restart
+- **Enforced limits**: `max_trades_per_hour`, `min_bars_between_orders`, `max_concurrent_positions` actually enforced
+- **Experiment log**: `experiments` table in `data/registry.db`
+- **Paper_live data collection**: paired (synthetic, real) liquidity samples logged for calibration
+- **Live validation runbook**: `validate_live_backend.py` — scripted 5-step testnet procedure
+- **run_live_loop()**: real implementation (replaced stub)
+- **FeatureVector rename**: period-agnostic names (`momentum_short/medium/long`, `volatility_short/medium/long`)
+- **FeatureEngine config-driven**: periods read from `feature_engine.*` config block

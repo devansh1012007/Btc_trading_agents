@@ -4,6 +4,10 @@ CRITICAL: No look-ahead bias. All features use only past data.
 Phase 2 added a volume z-score (stored in raw_features) for the regime
 detector's HMM observation set, and refactored onto the shared
 RollingBarBuffer.
+
+Phase 5: periods are now config-driven via feature_engine.* config block.
+Field names are period-agnostic (short/medium/long) to avoid lying about
+the actual period when config changes.
 """
 import pandas as pd
 import numpy as np
@@ -20,9 +24,24 @@ logger = logging.getLogger(__name__)
 class FeatureEngine:
     """Compute engineered features from price data."""
 
-    def __init__(self, lookback_bars: int = 100):
+    def __init__(self, lookback_bars: int = 100, config: Optional[dict] = None):
         self.lookback_bars = lookback_bars
+        self.config = config or {}
         self.price_history = RollingBarBuffer(maxlen=lookback_bars)
+
+        # Read periods from config (defaults match previous hardcoded values)
+        fe_cfg = self.config.get("feature_engine", self.config.get("features", {}))
+        mp = fe_cfg.get("momentum_periods", {})
+        self.momentum_short = mp.get("short", 1) if isinstance(mp, dict) else (mp[0] if len(mp) > 0 else 1)
+        self.momentum_medium = mp.get("medium", 5) if isinstance(mp, dict) else (mp[1] if len(mp) > 1 else 5)
+        self.momentum_long = mp.get("long", 10) if isinstance(mp, dict) else (mp[2] if len(mp) > 2 else 10)
+        vp = fe_cfg.get("volatility_periods", {})
+        self.volatility_short = vp.get("short", 1) if isinstance(vp, dict) else (vp[0] if len(vp) > 0 else 1)
+        self.volatility_medium = vp.get("medium", 5) if isinstance(vp, dict) else (vp[1] if len(vp) > 1 else 5)
+        self.volatility_long = vp.get("long", 10) if isinstance(vp, dict) else (vp[2] if len(vp) > 2 else 10)
+        self.rsi_period = fe_cfg.get("rsi_period", 14)
+        self.sma_periods = fe_cfg.get("sma_periods", [9, 21])
+        self.volume_zscore_period = fe_cfg.get("volume_zscore_period", 20)
 
     def add_bar(self, snapshot: MarketSnapshot) -> None:
         self.price_history.append({
@@ -43,22 +62,22 @@ class FeatureEngine:
         closes = np.array([b['close'] for b in self.price_history])
         volumes = np.array([b['volume'] for b in self.price_history])
 
-        momentum_30s = self._momentum(closes, periods=1)
-        momentum_5m = self._momentum(closes, periods=5)
+        momentum_short = self._momentum(closes, periods=self.momentum_short)
+        momentum_medium = self._momentum(closes, periods=self.momentum_medium)
 
-        volatility_30s = self._volatility(closes, periods=1)
-        volatility_5m = self._volatility(closes, periods=5)
+        volatility_short = self._volatility(closes, periods=self.volatility_short)
+        volatility_medium = self._volatility(closes, periods=self.volatility_medium)
 
         returns_5 = (closes[-1] / closes[-5] - 1) * 100 if len(closes) >= 5 else 0.0
 
-        rsi_14 = self._rsi(closes, periods=14)
+        rsi_14 = self._rsi(closes, periods=self.rsi_period)
         macd_signal = self._macd_signal(closes)
 
-        sma_9 = self._sma(closes, periods=9)
-        sma_21 = self._sma(closes, periods=21)
+        sma_9 = self._sma(closes, periods=self.sma_periods[0])
+        sma_21 = self._sma(closes, periods=self.sma_periods[1])
 
-        momentum_10m = self._momentum(closes, periods=10)
-        volatility_10m = self._volatility(closes, periods=10)
+        momentum_long = self._momentum(closes, periods=self.momentum_long)
+        volatility_long = self._volatility(closes, periods=self.volatility_long)
 
         total_depth = snapshot.bid_volume + snapshot.ask_volume
         if total_depth > 0:
@@ -76,17 +95,17 @@ class FeatureEngine:
         fv = FeatureVector(
             timestamp=snapshot.timestamp,
             symbol=snapshot.symbol,
-            momentum_30s=momentum_30s,
-            momentum_5m=momentum_5m,
-            volatility_30s=volatility_30s,
-            volatility_5m=volatility_5m,
+            momentum_short=momentum_short,
+            momentum_medium=momentum_medium,
+            volatility_short=volatility_short,
+            volatility_medium=volatility_medium,
             returns_5=returns_5,
             rsi_14=rsi_14,
             macd_signal=macd_signal,
             sma_9=sma_9,
             sma_21=sma_21,
-            momentum_10m=momentum_10m,
-            volatility_10m=volatility_10m,
+            momentum_long=momentum_long,
+            volatility_long=volatility_long,
             imbalance_ratio=imbalance_ratio,
             orderflow_momentum=orderflow_momentum,
             spread_pct=spread_pct,

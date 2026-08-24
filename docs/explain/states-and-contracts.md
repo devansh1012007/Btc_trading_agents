@@ -4,6 +4,14 @@
 
 All shared state lives in `src/state/contracts.py` as frozen dataclasses. Immutability is enforced — layers cannot mutate state produced by upstream layers.
 
+### FEATURE_SCHEMA_VERSION
+
+```python
+FEATURE_SCHEMA_VERSION = "v2_renamed"
+```
+
+Phase 5 schema version. All models carry this in their pickle payload. Pre-rename models (trained before Phase 5) will fall back to rule-based mode.
+
 ### RegimeType (Enum)
 
 ```
@@ -41,13 +49,16 @@ Raw market state at a timestamp. NOT predictive.
 
 Engineered features. No look-ahead bias — computed from past data only.
 
+**Phase 5 rename**: Field names are now period-agnostic (`short`/`medium`/`long`) instead of timeframe-specific (`30s`/`5m`/`10m`).
+
 | Field | Category |
 |---|---|
-| `momentum_30s/5m/10m` | Short-horizon |
-| `volatility_30s/5m/10m` | Short-horizon (note: `volatility_30s` is always 0.0) |
+| `momentum_short/medium/long` | Short-horizon |
+| `volatility_short/medium/long` | Short-horizon (note: `volatility_short` is always 0.0) |
 | `returns_5` | Short-horizon |
 | `rsi_14`, `macd_signal` | Short-horizon |
-| `sma_9`, `sma_21`, `momentum_10m`, `volatility_10m` | Medium-horizon |
+| `sma_9`, `sma_21` | Medium-horizon |
+| `momentum_long`, `volatility_long` | Medium-horizon |
 | `imbalance_ratio`, `orderflow_momentum` | Orderflow |
 | `spread_pct`, `depth_10_level` | Liquidity |
 | `distance_to_nearest_support/resistance` | Structural (filled by `attach_structural_features`) |
@@ -201,6 +212,51 @@ Master snapshot. Every bar gets one.
 | `risk_decision` | Optional[RiskDecision] | Only for new entries |
 | `execution_record` | Optional[ExecutionRecord] | Only on filled orders |
 | `realized_pnl` | Optional[float] | 0.0 on no-trade bars, not None |
+
+## Decision Trace (Phase 5)
+
+One record per bar — the full stage-by-stage journey through the pipeline.
+
+### StageResult
+
+```python
+@dataclass(frozen=True)
+class StageResult:
+    stage_name: str          # "trend_expert_gate", "opportunity_filter", "router", "risk_layer"
+    passed: bool
+    detail: str              # human-readable: "momentum 0.03% below threshold 0.05%"
+    values: Dict[str, float] # actual numbers, for reproducibility
+```
+
+### DecisionTrace
+
+```python
+@dataclass(frozen=True)
+class DecisionTrace:
+    timestamp: int
+    symbol: str
+    stages: List[StageResult]     # every stage the bar passed through, in order
+    terminal_stage: str            # where the journey ended
+    terminal_reason: str
+```
+
+Written to `data/logs/decision_traces/` as partitioned JSONL.
+
+### SystemFault
+
+```python
+@dataclass(frozen=True)
+class SystemFault:
+    timestamp: int
+    symbol: str
+    exception_type: str
+    exception_message: str
+    stack_trace: str
+    system_state_snapshot: Optional[Dict[str, Any]]
+    last_known_good_state_timestamp: Optional[int]
+```
+
+Written to `data/logs/faults.jsonl`.
 
 ## Serialization
 

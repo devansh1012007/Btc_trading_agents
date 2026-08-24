@@ -154,6 +154,41 @@ Adding a second trading pair later is a new partition, not a schema change. Path
 
 `SystemState.realized_pnl` is populated on every bar — 0.0 on no-trade bars, not `None`. This is critical for future training (contextual bandit / PPO needs (state, action, reward) every bar).
 
+## Decision Traces (`src/diagnostics/decision_trace.py`)
+
+One record per bar — the full stage-by-stage journey through the pipeline. Written to `data/logs/decision_traces/` as partitioned JSONL.
+
+```bash
+# Full trace for a specific bar
+python scripts/diagnose.py --timestamp 1755900000
+
+# Summary breakdown of all bars
+python scripts/diagnose.py --summary --since 2026-08-01
+```
+
+### Fault Log
+
+`data/logs/faults.jsonl` — full context, not just the traceback, so a fault from three days ago is actually reproducible.
+
+## Experiment Log (`src/registry/db.py`)
+
+Every backtest and training run is logged to `data/registry.db::experiments`:
+
+```sql
+CREATE TABLE experiments (
+    experiment_id TEXT PRIMARY KEY,
+    run_type TEXT NOT NULL,          -- "backtest" | "training"
+    started_at TEXT NOT NULL,
+    config_hash TEXT NOT NULL,       -- content hash of the config used
+    config_snapshot TEXT NOT NULL,   -- the actual YAML config (truncated)
+    component TEXT,                  -- component name (e.g. "router", "full_stack")
+    metrics_json TEXT,               -- JSON of resulting metrics
+    git_commit TEXT                  -- git commit if available
+);
+```
+
+This is the literal answer to "data collection for future agents": a growing, queryable history of exactly which configurations were tried and what happened, valuable both for manual tuning and as a training signal for a future hyperparameter-search agent or bandit-style tuner — the config space *is* an action space, and this table is its outcome log.
+
 ## Status Script (`scripts/status.py`)
 
 One-glance health check:

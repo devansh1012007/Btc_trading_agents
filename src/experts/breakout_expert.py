@@ -5,7 +5,7 @@ range, confirmed by a volume surge and orderflow agreement.
 Deviation from the plan's literal pseudocode: FeatureVector carries no raw
 `volume` field and there's no pre-built rolling-average helper, so this
 substitutes volume_zscore (already computed by FeatureEngine, §7.1) for
-volume confirmation, and maintains its own rolling volatility_5m buffer
+volume confirmation, and maintains its own rolling volatility_medium buffer
 over compression_lookback_bars for the compression check, computed
 statefully here.
 
@@ -23,13 +23,13 @@ from .base_expert import BaseExpert, compute_invalidation_distance
 
 logger = logging.getLogger(__name__)
 
-FEATURE_NAMES = ["volatility_5m", "volatility_10m", "volume_zscore", "orderflow_momentum", "regime_confidence"]
+FEATURE_NAMES = ["volatility_medium", "volatility_long", "volume_zscore", "orderflow_momentum", "regime_confidence"]
 
 
 def build_features(fv: FeatureVector, zones: ZoneMap, regime: RegimeState, direction: int) -> Dict[str, float]:
     return {
-        "volatility_5m": fv.volatility_5m,
-        "volatility_10m": fv.volatility_10m,
+        "volatility_medium": fv.volatility_medium,
+        "volatility_long": fv.volatility_long,
         "volume_zscore": (fv.raw_features or {}).get("volume_zscore", 0.0),
         "orderflow_momentum": fv.orderflow_momentum,
         "regime_confidence": regime.regime_confidence,
@@ -47,7 +47,7 @@ class BreakoutExpert(BaseExpert):
 
     def propose_candidate(self, fv: FeatureVector, zones: ZoneMap, regime: RegimeState) -> Optional[int]:
         cfg = self.config
-        self._volatility_history.append({"volatility_5m": fv.volatility_5m})
+        self._volatility_history.append({"volatility_medium": fv.volatility_medium})
 
         if regime.primary_regime not in self._regime_requirement:
             return None
@@ -57,10 +57,10 @@ class BreakoutExpert(BaseExpert):
         if len(self._volatility_history) < 2:
             return None
 
-        avg_vol = float(np.mean(self._volatility_history.field_array("volatility_5m")))
+        avg_vol = float(np.mean(self._volatility_history.field_array("volatility_medium")))
         if avg_vol <= 0:
             return None
-        if fv.volatility_5m > avg_vol * (1 - cfg["compression_pct_threshold"] / 100):
+        if fv.volatility_medium > avg_vol * (1 - cfg["compression_pct_threshold"] / 100):
             return None
 
         volume_zscore = (fv.raw_features or {}).get("volume_zscore", 0.0)

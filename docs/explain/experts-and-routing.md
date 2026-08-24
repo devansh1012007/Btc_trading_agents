@@ -13,9 +13,9 @@ The rule gate is **deterministic** (no randomness). If `propose_candidate()` ret
 
 ### Model Loading
 
-Pickle payload contains: `{"model": ..., "feature_names": [...], "granularity": "1m", "avg_favorable_return": ..., "avg_unfavorable_return": ..., "avg_adverse_excursion": ...}`.
+Pickled model payload contains: `{"model": ..., "feature_names": [...], "granularity": "1m", "feature_version": "v2_renamed", ...}`.
 
-At load time, checks `granularity` against running `data_granularity`. Mismatch → `use_fallback_mode = True`, model set to `None`.
+At load time, checks both `granularity` and `feature_version` against running config. Mismatch → `use_fallback_mode = True`, model set to `None`.
 
 ### EV Computation
 
@@ -37,11 +37,11 @@ All must pass:
 - Regime ∈ {TRENDING_UP, TRENDING_DOWN}
 - Regime confidence ≥ `regime_confidence_floor` (0.4)
 - Regime persistence ≥ `persistence_requirement` (0.5)
-- `momentum_5m` ≥ `momentum_threshold` (0.05)
+- `momentum_medium` ≥ `momentum_threshold` (0.05)
 
 ### Features (7)
 
-`momentum_5m`, `momentum_10m`, `sma_slope`, `invalidation_distance`, `regime_confidence`, `regime_persistence_score`, `volatility_5m`
+`momentum_medium`, `momentum_long`, `sma_slope`, `invalidation_distance`, `regime_confidence`, `regime_persistence_score`, `volatility_medium`
 
 ### Fallback
 
@@ -59,7 +59,7 @@ All must pass:
 
 ### Features (6)
 
-`rsi_14`, `zone_strength`, `zone_age`, `zone_proximity_pct`, `regime_confidence`, `volatility_5m`
+`rsi_14`, `zone_strength`, `zone_age`, `zone_proximity_pct`, `regime_confidence`, `volatility_medium`
 
 ### Training Data
 
@@ -76,13 +76,13 @@ Harvested from `harvest_zone_touch_candidates()` — replay bars WITHOUT running
 All must pass:
 - Regime ∈ {TRENDING_UP, TRENDING_DOWN}
 - Regime confidence ≥ `regime_confidence_floor` (0.35)
-- Volatility compression: rolling `volatility_5m` buffer shows compression (implemented statefully, not from config)
+- Volatility compression: rolling `volatility_medium` buffer shows compression (implemented statefully, not from config)
 - Volume surge: `volume_zscore` ≥ `volume_zscore_surge_threshold` (1.0)
 - Orderflow agreement: `orderflow_momentum` ≥ `orderflow_momentum_threshold` (10)
 
 ### Features (4)
 
-`volatility_5m`, `volatility_10m`, `volume_zscore`, `orderflow_momentum`
+`volatility_medium`, `volatility_long`, `volume_zscore`, `orderflow_momentum`
 
 ### Training Data
 
@@ -122,7 +122,7 @@ Features include `bars_since_switch` and `current_expert` derived from the hinds
 ### Model Payload
 
 ```python
-{"model": lgbm_model, "feature_names": FEATURE_NAMES, "granularity": "1m"}
+{"model": lgbm_model, "feature_names": FEATURE_NAMES, "granularity": "1m", "feature_version": "v2_renamed"}
 ```
 
 ### Fallback Behavior

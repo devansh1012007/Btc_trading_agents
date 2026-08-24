@@ -39,11 +39,11 @@ def make_snapshot(timestamp=0, close=100.0, bid_volume=30.0, ask_volume=30.0, sp
     )
 
 
-def make_feature_vector(timestamp=0, volatility_5m=0.1, volume_zscore=0.0, symbol="BTC/USDT"):
+def make_feature_vector(timestamp=0, volatility_medium=0.1, volume_zscore=0.0, symbol="BTC/USDT"):
     return FeatureVector(
-        timestamp=timestamp, symbol=symbol, momentum_30s=0, momentum_5m=0.1, volatility_30s=0.0,
-        volatility_5m=volatility_5m, returns_5=0, rsi_14=50, macd_signal=0, sma_9=101, sma_21=100,
-        momentum_10m=0.1, volatility_10m=0.1, imbalance_ratio=0.5, orderflow_momentum=0,
+        timestamp=timestamp, symbol=symbol, momentum_short=0, momentum_medium=0.1, volatility_short=0.0,
+        volatility_medium=volatility_medium, returns_5=0, rsi_14=50, macd_signal=0, sma_9=101, sma_21=100,
+        momentum_long=0.1, volatility_long=0.1, imbalance_ratio=0.5, orderflow_momentum=0,
         spread_pct=0.02, depth_10_level=100, raw_features={"volume_zscore": volume_zscore},
     )
 
@@ -95,8 +95,8 @@ def make_risk_layer(db_path, hard_rules=None, breakers=None):
 
 def test_synthetic_liquidity_bounds():
     bar = make_snapshot(close=50000.0)
-    low_vol_fv = make_feature_vector(volatility_5m=0.01, volume_zscore=2.0)
-    high_vol_fv = make_feature_vector(volatility_5m=1.0, volume_zscore=2.0)
+    low_vol_fv = make_feature_vector(volatility_medium=0.01, volume_zscore=2.0)
+    high_vol_fv = make_feature_vector(volatility_medium=1.0, volume_zscore=2.0)
     cfg = {"base_spread_pct": 0.015, "k_volatility": 0.8, "k_illiquidity": 0.02,
            "min_volume_zscore_floor": 0.1, "k_depth": 3.0, "depth_participation_rate": 0.15}
 

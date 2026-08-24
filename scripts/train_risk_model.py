@@ -149,7 +149,8 @@ def main():
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"model": model, "feature_names": FEATURE_NAMES, "granularity": data_granularity}
+    payload = {"model": model, "feature_names": FEATURE_NAMES, "granularity": data_granularity,
+               "feature_version": "v2_renamed"}
     with open(output_path, "wb") as f:
         pickle.dump(payload, f)
 

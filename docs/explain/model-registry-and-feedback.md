@@ -4,7 +4,7 @@
 
 ### Architecture
 
-SQLite-backed version lifecycle. Single file (`data/registry.db`), shared with circuit breakers, trade journal, and order tracking.
+SQLite-backed version lifecycle. Single file (`data/registry.db`), shared with circuit breakers, trade journal, order tracking, and experiment log.
 
 ### Schema
 
@@ -19,6 +19,17 @@ CREATE TABLE model_versions (
     status TEXT NOT NULL,           -- pending_approval | approved_active | superseded | rejected
     promoted_at TEXT,
     promoted_by TEXT
+);
+
+CREATE TABLE experiments (
+    experiment_id TEXT PRIMARY KEY,
+    run_type TEXT NOT NULL,          -- "backtest" | "training"
+    started_at TEXT NOT NULL,
+    config_hash TEXT NOT NULL,       -- content hash of the config used
+    config_snapshot TEXT NOT NULL,   -- the actual YAML config (truncated)
+    component TEXT,                  -- component name (e.g. "router", "full_stack")
+    metrics_json TEXT,               -- JSON of resulting metrics
+    git_commit TEXT                  -- git commit if available
 );
 ```
 
@@ -111,6 +122,25 @@ python scripts/rollback_model.py router router_v1.pkl
 
 Restores previous version as `approved_active`, marks current as `superseded`.
 
+## Experiment Log (Phase 5)
+
+Every backtest and training run is logged to `data/registry.db::experiments`:
+
+```sql
+CREATE TABLE experiments (
+    experiment_id TEXT PRIMARY KEY,
+    run_type TEXT NOT NULL,          -- "backtest" | "training"
+    started_at TEXT NOT NULL,
+    config_hash TEXT NOT NULL,       -- content hash of the config used
+    config_snapshot TEXT NOT NULL,   -- the actual YAML config (truncated)
+    component TEXT,                  -- component name (e.g. "router", "full_stack")
+    metrics_json TEXT,               -- JSON of resulting metrics
+    git_commit TEXT                  -- git commit if available
+);
+```
+
+This is the literal answer to "data collection for future agents": a growing, queryable history of exactly which configurations were tried and what happened, valuable both for manual tuning and as a training signal for a future hyperparameter-search agent or bandit-style tuner — the config space *is* an action space, and this table is its outcome log.
+
 ## Feedback Loop Architecture
 
 ### What Gets Logged
@@ -120,6 +150,9 @@ Restores previous version as `approved_active`, marks current as `superseded`.
 | Trade journal | SQLite (`trade_journal` table) | Entry/exit, PnL, expert, regime, confidence |
 | Zone events | Parquet (`data/logs/zone_events.parquet`) | Zone lifecycle events |
 | System state archive | Parquet (`data/logs/system_state/{symbol}/{date}.parquet`) | Every bar's full SystemState |
+| Decision traces | JSONL (`data/logs/decision_traces/traces_YYYY-MM-DD.jsonl`) | Stage-by-stage bar journey |
+| Faults | JSONL (`data/logs/faults.jsonl`) | Exception records with full context |
+| Experiments | SQLite (`experiments` table) | Config hash, metrics, git commit |
 
 ### Retraining Targets
 
@@ -161,7 +194,7 @@ results = check_feature_drift(
     current=live_features,
     psi_alert_threshold=0.25
 )
-# {"momentum_5m": {"psi": 0.32, "alert": True}, ...}
+# {"momentum_medium": {"psi": 0.32, "alert": True}, ...}
 ```
 
 ### Performance Gap Detection

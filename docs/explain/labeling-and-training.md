@@ -21,7 +21,7 @@ stop_loss_pct = k_sl × volatility_pct
 
 ### `barrier_volatility_pct()`
 
-Uses `volatility_5m` (a genuinely multi-sample, well-defined dispersion statistic) instead of `volatility_30s` which is always 0.0 (std of single-element array). Applied at all six call sites (every training script, the backtest harness, and the shared replay helper) so there's one place this decision lives.
+Uses `volatility_medium` (a genuinely multi-sample, well-defined dispersion statistic) instead of `volatility_short` which is always 0.0 (std of single-element array). Applied at all six call sites (every training script, the backtest harness, and the shared replay helper) so there's one place this decision lives.
 
 ### `TripleBarrierOutcome`
 
@@ -48,7 +48,7 @@ Uses `volatility_5m` (a genuinely multi-sample, well-defined dispersion statisti
 
 **Step 3: LightGBM Distillation**
 - Train classifier on smoothed offline labels
-- Features: `observation_features` from config (momentum_5m, momentum_10m, volatility_5m, volatility_10m, volume_zscore)
+- Features: `observation_features` from config (momentum_medium, momentum_long, volatility_medium, volatility_long, volume_zscore)
 - Walk-forward CV via `WalkForwardSplitter`
 - Model card saved with fold metrics
 
@@ -91,7 +91,7 @@ Uses `volatility_5m` (a genuinely multi-sample, well-defined dispersion statisti
 **Label**: "best expert proxy" — for each bar, which expert's triple-barrier return was highest? If all ≤ 0, label is 0 (not tradable).
 
 **Features**: `build_features()` extracts 8 features from expert_outputs, regime_state, zone_map, market, fv:
-- `edge_vs_fees`, `spread_pct`, `depth_usdt`, `volatility_5m`, `best_confidence`, `expert_disagreement`, `regime_confidence`, `is_panic`
+- `edge_vs_fees`, `spread_pct`, `depth_usdt`, `volatility_medium`, `best_confidence`, `expert_disagreement`, `regime_confidence`, `is_panic`
 
 **Model**: LightGBM binary classifier. Blend weight: 0.3 (30% model, 70% hard rules).
 
@@ -133,7 +133,8 @@ Every trained model has a `.meta.json` companion:
   "trained_at": "2025-01-01T00:00:00+00:00",
   "n_samples": 1234,
   "label_distribution": {"trend_expert": 500, "no_trade": 734},
-  "feature_names": ["momentum_5m", ...],
+  "feature_names": ["momentum_medium", ...],
+  "feature_version": "v2_renamed",
   "walk_forward_folds": [{"fold": 0, "n_train": 5000, "n_test": 500, "accuracy": 0.72, "auc": 0.68}, ...],
   "granularity": "1m"
 }
@@ -150,3 +151,22 @@ One-shot script (invoked by cron/systemd timer, not long-running). For each comp
 5. **Never touches `approved_active`** — promotion is exclusively `approve_model.py`'s job
 
 Components: zone_survival, regime_hmm, regime_classifier, trend_expert, mean_reversion_expert, breakout_expert, opportunity_filter, router, risk_model.
+
+## Experiment Log (Phase 5)
+
+Every backtest and training run is logged to `data/registry.db::experiments`:
+
+```sql
+CREATE TABLE experiments (
+    experiment_id TEXT PRIMARY KEY,
+    run_type TEXT NOT NULL,          -- "backtest" | "training"
+    started_at TEXT NOT NULL,
+    config_hash TEXT NOT NULL,       -- content hash of the config used
+    config_snapshot TEXT NOT NULL,   -- the actual YAML config (truncated)
+    component TEXT,                  -- component name (e.g. "router", "full_stack")
+    metrics_json TEXT,               -- JSON of resulting metrics
+    git_commit TEXT                  -- git commit if available
+);
+```
+
+This is the literal answer to "data collection for future agents": a growing, queryable history of exactly which configurations were tried and what happened, valuable both for manual tuning and as a training signal for a future hyperparameter-search agent or bandit-style tuner — the config space *is* an action space, and this table is its outcome log.
