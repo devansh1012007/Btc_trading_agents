@@ -1,8 +1,9 @@
 ###############################################################################
 # SYSTEM CONFIGURATION (Phase 3 §4)
 ###############################################################################
+
 system:
-  data_granularity: "1m"                # "10s", "30s", "1m", "5m" -- config only, no code change to switch
+  data_granularity: "30s"                # "10s", "30s", "1m", "5m" -- config only, no code change to switch
   exchange: "binance"
   sandbox: true
   symbol: "BTC/USDT"
@@ -202,9 +203,9 @@ models:
 # BACKTEST & TRAINING (walk-forward, shared across every Phase 2/3 script)
 ###############################################################################
 backtest:
-  train_bars: 5000
-  test_bars: 500
-  step_bars: 100
+  train_bars: 5000000
+  test_bars: 5000
+  step_bars: 1000
   embargo_bars: 50
 
 
@@ -269,8 +270,8 @@ execution:
   slippage_pct: 0.01
   confirm_real_money: false      # Second, separate flag from mode -- both required for live orders
   secrets:
-    api_key_env_var: "BTC_BOT_API_KEY"
-    api_secret_env_var: "BTC_BOT_API_SECRET"
+    api_key_env_var: {"BTC_BOT_API_KEY"}
+    api_secret_env_var: {"BTC_BOT_API_SECRET"}
 
 ###############################################################################
 # MODEL REGISTRY & RETRAINING (Phase 4, §8)

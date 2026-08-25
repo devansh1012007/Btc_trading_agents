@@ -15,13 +15,16 @@ use the JSON-blob-column approach (§9 option A from Phase 2's plan) --
 they're genuinely nested, not flat records.
 """
 import json
-from dataclasses import asdict, fields
-from typing import Dict, Any, List
+from typing import Any, Dict, List
+
 import pandas as pd
-from datetime import datetime
+
 from .contracts import (
-    SystemState, MarketSnapshot, FeatureVector, RegimeState, Zone, ZoneMap,
-    ExpertOutput, ExpertOutputs, OpportunityScore, RouterDecision, RiskDecision, ExecutionRecord,
+    ExpertOutput,
+    ExpertOutputs,
+    SystemState,
+    Zone,
+    ZoneMap,
 )
 
 

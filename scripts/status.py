@@ -5,12 +5,11 @@ pending_approval registry entries, today's trade count and PnL.
 """
 import argparse
 import os
-from datetime import datetime, timezone
 
-from src.utils.config_helpers import load_layered_config
+from src.feedback.trade_journal import summarize
 from src.layers.risk_layer import RiskStateStore
 from src.registry.model_registry import get_pending
-from src.feedback.trade_journal import summarize
+from src.utils.config_helpers import load_layered_config
 
 
 def main():

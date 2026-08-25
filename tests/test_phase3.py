@@ -5,20 +5,28 @@ fallback + switching context + granularity-guard, config loading, and
 timeframe adaptation.
 """
 import pickle
+
 import numpy as np
 import pytest
 import yaml
 
-from src.state.contracts import (
-    MarketSnapshot, FeatureVector, ZoneMap, RegimeState, RegimeType,
-    ExpertOutput, ExpertOutputs, ExpertAction, OpportunityScore,
-)
-from src.labeling.triple_barrier import label_triple_barrier, TripleBarrierOutcome
-from src.experts.trend_expert import TrendExpert
 from src.experts.expert_registry import build_experts
-from src.layers.opportunity_filter import OpportunityFilter, FEATURE_NAMES as OPP_FEATURE_NAMES
+from src.experts.trend_expert import TrendExpert
+from src.labeling.triple_barrier import label_triple_barrier
+from src.layers.opportunity_filter import FEATURE_NAMES as OPP_FEATURE_NAMES
+from src.layers.opportunity_filter import OpportunityFilter
 from src.layers.router import Router
-
+from src.state.contracts import (
+    ExpertAction,
+    ExpertOutput,
+    ExpertOutputs,
+    FeatureVector,
+    MarketSnapshot,
+    OpportunityScore,
+    RegimeState,
+    RegimeType,
+    ZoneMap,
+)
 
 # --------------------------------------------------------------------
 # Helpers

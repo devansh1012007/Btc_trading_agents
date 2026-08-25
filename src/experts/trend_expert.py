@@ -5,7 +5,7 @@ agrees, is confident, and is persistent.
 import logging
 from typing import Dict, Optional
 
-from ..state.contracts import FeatureVector, ZoneMap, RegimeState, ExpertOutput, ExpertAction
+from ..state.contracts import ExpertAction, ExpertOutput, FeatureVector, RegimeState, ZoneMap
 from ..utils.config_helpers import parse_regime_list
 from .base_expert import BaseExpert, compute_invalidation_distance
 

@@ -6,11 +6,10 @@ Fills are simulated via the shared simulate_fill() math; no network calls
 at all.
 """
 import logging
-from datetime import datetime, timezone
 
-from ...state.contracts import RiskDecision, RouterDecision, ExpertOutput, MarketSnapshot, ExecutionRecord, ExpertAction
 from ...liquidity.types import LiquidityEstimate
-from ..execution_engine import ExecutionBackend, simulate_fill, make_client_order_id
+from ...state.contracts import ExecutionRecord, ExpertAction, ExpertOutput, MarketSnapshot, RiskDecision, RouterDecision
+from ..execution_engine import ExecutionBackend, make_client_order_id, simulate_fill
 
 logger = logging.getLogger(__name__)
 

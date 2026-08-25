@@ -3,8 +3,8 @@ Real order-book adapter (Phase 4, §4.3) -- used in paper-live-data and
 live modes, where a genuine CCXT order book is available and there's no
 reason to estimate what you can just ask the exchange for.
 """
-from dataclasses import replace
 import logging
+from dataclasses import replace
 
 from ..state.contracts import MarketSnapshot
 from .types import LiquidityEstimate

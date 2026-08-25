@@ -29,7 +29,6 @@ sys.path.insert(0, str(ROOT))
 
 from src.diagnostics import dashboard_data as dd  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Shared Rich renderables (used by live TUI and --once mode alike)
 # ---------------------------------------------------------------------------
@@ -59,9 +58,9 @@ def build_status_line(snap: dict) -> str:
 
 
 def build_signal_path_view(snap: dict):
+    from rich import box
     from rich.console import Group
     from rich.table import Table
-    from rich import box
 
     rates = Table(title="Stage pass rates (bars reaching each stage)", box=box.SIMPLE_HEAVY)
     rates.add_column("stage", style="cyan")
@@ -94,10 +93,11 @@ def build_signal_path_view(snap: dict):
 
 
 def build_trades_view(snap: dict):
+    from datetime import datetime, timezone
+
+    from rich import box
     from rich.console import Group
     from rich.table import Table
-    from rich import box
-    from datetime import datetime, timezone
 
     t = Table(title=f"Trade journal tail (open positions: {snap['db']['open_trades']})",
               box=box.SIMPLE_HEAVY)
@@ -106,8 +106,10 @@ def build_trades_view(snap: dict):
                       ("exit px", "right"), ("reason", "yellow"), ("pnl %", "right"),
                       ("pnl $", "right")]:
         t.add_column(col, justify=just)
+    def fmt_ts(ts):
+        return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%m-%d %H:%M") if ts else "—"
+
     for tr in snap["db"]["recent_trades"]:
-        fmt_ts = lambda ts: datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%m-%d %H:%M") if ts else "—"
         pnl = tr.get("realized_pnl_pct")
         pnl_s = f"[{'green' if pnl and pnl > 0 else 'red'}]{_fmt(pnl, '', 3)}[/]" if pnl is not None else "open"
         usd = tr.get("realized_pnl_usdt")
@@ -123,9 +125,8 @@ def build_trades_view(snap: dict):
 
 
 def build_performance_view(snap: dict):
-    from rich.console import Group
-    from rich.table import Table
     from rich import box
+    from rich.table import Table
 
     rep = snap["report"]
     if not rep.get("present"):
@@ -139,7 +140,8 @@ def build_performance_view(snap: dict):
     agg = rep["aggregate"]
     head = Table(title=f"Aggregate — report {rep['config_hash']} ({rep['generated_at'][:19]}Z)",
                  box=box.SIMPLE_HEAVY, show_header=False)
-    head.add_column("k"); head.add_column("v")
+    head.add_column("k")
+    head.add_column("v")
     rows = [
         ("total return", _fmt(agg.get("total_return_pct"), "%")),
         ("trades", str(agg.get("n_trades", 0))),
@@ -199,9 +201,9 @@ def window_returns(snap: dict):
 
 
 def build_calibration_view(snap: dict):
-    from rich.table import Table
-    from rich.console import Group
     from rich import box
+    from rich.console import Group
+    from rich.table import Table
 
     rep = snap["report"]
     if not rep.get("present"):
@@ -248,10 +250,10 @@ def build_calibration_view(snap: dict):
 
 
 def build_risk_view(snap: dict):
-    from rich.table import Table
-    from rich.console import Group
-    from rich.text import Text
     from rich import box
+    from rich.console import Group
+    from rich.table import Table
+    from rich.text import Text
 
     db = snap["db"]
     if not db["db_present"]:
@@ -260,7 +262,8 @@ def build_risk_view(snap: dict):
     parts = []
     ab = Table(title="Active breakers", box=box.SIMPLE_HEAVY)
     ab.add_column("breaker", style="bold red")
-    ab.add_column("tripped_at"); ab.add_column("reason", overflow="fold")
+    ab.add_column("tripped_at")
+    ab.add_column("reason", overflow="fold")
     for b in db["active_breakers"]:
         ab.add_row(b["breaker_type"], str(b.get("tripped_at")), str(b.get("reason")))
     if not db["active_breakers"]:
@@ -275,7 +278,8 @@ def build_risk_view(snap: dict):
         hist.add_row(b["breaker_type"], act, str(b.get("tripped_at")), str(b.get("reset_at")))
 
     rs = Table(title="risk_state", box=box.SIMPLE, show_header=False)
-    rs.add_column("key", style="cyan"); rs.add_column("value")
+    rs.add_column("key", style="cyan")
+    rs.add_column("value")
     for k in sorted(db["risk_state"]):
         rs.add_row(k, str(db["risk_state"][k]))
 
@@ -283,7 +287,9 @@ def build_risk_view(snap: dict):
 
     fl = Table(title=f"Faults (tail of {len(db.get('_faults_all', [])) or 'data/logs/faults.jsonl'})",
                box=box.SIMPLE)
-    fl.add_column("time"); fl.add_column("type", style="red"); fl.add_column("message", overflow="fold")
+    fl.add_column("time")
+    fl.add_column("type", style="red")
+    fl.add_column("message", overflow="fold")
     faults = dd.load_faults()
     for f in faults[-8:]:
         fl.add_row(time.strftime("%m-%d %H:%M:%S", time.gmtime(f.get("timestamp", 0))),
@@ -295,10 +301,10 @@ def build_risk_view(snap: dict):
 
 
 def build_registry_view(snap: dict):
-    from rich.table import Table
-    from rich.console import Group
-    from rich.text import Text
     from rich import box
+    from rich.console import Group
+    from rich.table import Table
+    from rich.text import Text
 
     db = snap["db"]
     if not db["db_present"]:
@@ -319,9 +325,12 @@ def build_registry_view(snap: dict):
         parts.append(mv)
 
     ex = Table(title="Experiments (latest 15)", box=box.SIMPLE_HEAVY)
-    ex.add_column("experiment_id"); ex.add_column("type", justify="center")
-    ex.add_column("component", style="cyan"); ex.add_column("cfg", justify="center")
-    ex.add_column("started_at"); ex.add_column("metrics", overflow="fold")
+    ex.add_column("experiment_id")
+    ex.add_column("type", justify="center")
+    ex.add_column("component", style="cyan")
+    ex.add_column("cfg", justify="center")
+    ex.add_column("started_at")
+    ex.add_column("metrics", overflow="fold")
     for e in db["experiments"]:
         mjson = e.get("metrics_json")
         extra = ""
@@ -373,13 +382,13 @@ def build_all_views(snap: dict):
 def run_tui(refresh_seconds: float = 5.0):
     try:
         from textual.app import App, ComposeResult
-        from textual.widgets import Header, Footer, Static, TabbedContent, TabPane, Sparkline
         from textual.containers import Vertical
-    except ImportError:
+        from textual.widgets import Footer, Header, Sparkline, Static, TabbedContent, TabPane
+    except ImportError as e:
         raise SystemExit(
             "textual is required for the live dashboard:\n"
             "  pip install textual\n"
-            "(or use the headless renderer: python scripts/dashboard.py --once)")
+            "(or use the headless renderer: python scripts/dashboard.py --once)") from e
 
     class DashboardApp(App):
         TITLE = "BTC Trading Agents — Signal Console"

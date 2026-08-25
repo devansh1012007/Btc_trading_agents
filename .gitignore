@@ -52,3 +52,7 @@ htmlcov/
 # Logs
 *.log
 logs/
+
+*.env
+wheelhouse-BTC/
+wheelhouse4BTC/

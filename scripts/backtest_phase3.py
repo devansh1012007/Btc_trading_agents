@@ -18,7 +18,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 from src.backtest.replay import replay_full_stack
-from src.labeling.triple_barrier import label_triple_barrier, compute_barrier_pcts, barrier_volatility_pct
+from src.labeling.triple_barrier import barrier_volatility_pct, compute_barrier_pcts, label_triple_barrier
 
 
 def load_config(path="config/settings.base.yaml") -> dict:

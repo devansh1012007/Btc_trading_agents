@@ -9,11 +9,11 @@ Phase 5: periods are now config-driven via feature_engine.* config block.
 Field names are period-agnostic (short/medium/long) to avoid lying about
 the actual period when config changes.
 """
-import pandas as pd
-import numpy as np
-from typing import Dict, List, Optional
 import logging
-from datetime import datetime
+from typing import Optional
+
+import numpy as np
+import pandas as pd
 
 from ..state.contracts import FeatureVector, MarketSnapshot
 from ..utils.rolling_buffer import RollingBarBuffer

@@ -14,8 +14,6 @@ instead of trying to mutate objects in place. Circuit-breaker state
 attributes, so rebuilding the layer objects doesn't lose any state that
 actually needs to survive.
 """
-import os
-import time
 import logging
 from pathlib import Path
 from typing import Callable, Dict, List, Optional

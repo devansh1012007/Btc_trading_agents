@@ -13,7 +13,15 @@ from typing import Dict, Optional, Tuple
 
 import numpy as np
 
-from ..state.contracts import FeatureVector, ZoneMap, RegimeState, RegimeType, ExpertOutput, ExpertAction, FEATURE_SCHEMA_VERSION
+from ..state.contracts import (
+    FEATURE_SCHEMA_VERSION,
+    ExpertAction,
+    ExpertOutput,
+    FeatureVector,
+    RegimeState,
+    RegimeType,
+    ZoneMap,
+)
 
 logger = logging.getLogger(__name__)
 

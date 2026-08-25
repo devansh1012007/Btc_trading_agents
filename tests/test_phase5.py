@@ -21,14 +21,21 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from src.reporting.performance_report import (
-    compute_trade_stats, equity_curve_drawdown_pct, total_return_pct,
-    compute_breakdowns, confidence_calibration, miscalibration_score,
-    momentum_baseline_episodes, buy_and_hold_episodes, chained_equity_curve,
-    success_criteria_check, baseline_verdicts, _sanitize,
-)
 import full_stack_walk_forward_backtest as fsb
 
+from src.reporting.performance_report import (
+    _sanitize,
+    baseline_verdicts,
+    buy_and_hold_episodes,
+    chained_equity_curve,
+    compute_trade_stats,
+    confidence_calibration,
+    equity_curve_drawdown_pct,
+    miscalibration_score,
+    momentum_baseline_episodes,
+    success_criteria_check,
+    total_return_pct,
+)
 
 # --------------------------------------------------------------------
 # Helpers
@@ -328,8 +335,7 @@ def test_feature_version_guard_falls_back(tmp_path):
 # --------------------------------------------------------------------
 
 def test_consistency_validator_catches_dead_breaker():
-    from src.config.consistency_validator import (
-        validate_breaker_enforcement_paths, ConfigConsistencyError)
+    from src.config.consistency_validator import ConfigConsistencyError, validate_breaker_enforcement_paths
 
     cfg = {"risk": {"circuit_breakers": {
         "max_drawdown_pct": 8.0,
@@ -346,8 +352,7 @@ def test_consistency_validator_catches_dead_breaker():
 
 
 def test_threshold_plausibility_flags_impossible_spread_gate():
-    from src.config.consistency_validator import (
-        validate_threshold_plausibility, ConfigConsistencyError)
+    from src.config.consistency_validator import ConfigConsistencyError, validate_threshold_plausibility
     good_cfg = {"liquidity": {"synthetic": {"base_spread_pct": 0.005,
                                             "k_volatility": 0.1, "k_illiquidity": 0.001,
                                             "min_volume_zscore_floor": 0.1}},
@@ -425,8 +430,10 @@ def test_db_snapshot_degrades_gracefully(tmp_path):
 
 
 def test_load_latest_report_newest_by_mtime_skips_corrupt(tmp_path):
+    import json as _json
+    import os
+
     from src.diagnostics.dashboard_data import load_latest_report
-    import os, json as _json
     old = tmp_path / "backtest_old.json"
     new = tmp_path / "backtest_new.json"
     bad = tmp_path / "backtest_bad.json"
@@ -474,6 +481,7 @@ def test_dashboard_views_render_from_empty_and_real_snapshots():
     import sys as _sys
     _sys.path.insert(0, str(ROOT / "scripts"))
     import dashboard as dash
+
     from src.diagnostics import dashboard_data as dd
 
     empty = dd.build_snapshot(trace_dir=str(ROOT / "data" / "logs" / "nope"),

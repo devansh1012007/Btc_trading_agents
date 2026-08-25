@@ -32,9 +32,10 @@ import logging
 import os
 import sys
 import time
+import traceback
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Optional, List
+from typing import List, Optional
 
 import pandas as pd
 
@@ -43,20 +44,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-from src.utils.config_helpers import load_layered_config
-from src.pipeline import TradingPipeline
-from src.layers.risk_layer import RiskLayer, RiskStateStore
-from src.execution.execution_engine import ExecutionEngine
-from src.execution.backends.paper_sim_backend import PaperSimBackend
-from src.execution.backends.paper_live_backend import PaperLiveBackend
+from src.diagnostics.decision_trace import DecisionTrace, DecisionTraceWriter, StageResult
 from src.execution.backends.live_backend import LiveBackend
+from src.execution.backends.paper_live_backend import PaperLiveBackend
+from src.execution.backends.paper_sim_backend import PaperSimBackend
+from src.execution.execution_engine import ExecutionEngine
 from src.execution.reconciliation import reconcile
+from src.feedback.system_state_archive import write_system_state_archive
 from src.feedback.trade_journal import record_trade_entry, record_trade_exit
 from src.feedback.zone_event_log import flush_zone_events
-from src.feedback.system_state_archive import write_system_state_archive
-from src.labeling.triple_barrier import compute_barrier_pcts, barrier_volatility_pct
-from src.state.contracts import SystemState, ExpertAction
-from src.diagnostics.decision_trace import DecisionTraceWriter, DecisionTrace, StageResult
+from src.labeling.triple_barrier import barrier_volatility_pct, compute_barrier_pcts
+from src.layers.risk_layer import RiskLayer, RiskStateStore
+from src.pipeline import TradingPipeline
+from src.state.contracts import ExpertAction, SystemState
+from src.utils.config_helpers import load_layered_config
 
 GRANULARITY_SECONDS = {"10s": 10, "30s": 30, "1m": 60, "5m": 300}
 
@@ -360,9 +361,8 @@ def run_live_loop(pipeline: TradingPipeline, risk_layer: RiskLayer, execution_en
     as run_historical, sleep until the next bar boundary, repeat until the
     kill switch is set or the process is killed.
     """
+    from src.diagnostics.decision_trace import DecisionTrace, DecisionTraceWriter, FaultLogWriter, StageResult
     from src.layers.market_data import MarketDataLayer
-    from src.diagnostics.decision_trace import DecisionTraceWriter, DecisionTrace, StageResult
-    from src.diagnostics.decision_trace import FaultLogWriter
 
     granularity = config.get("system", {}).get("data_granularity", "1m")
     poll_seconds = GRANULARITY_SECONDS.get(granularity, 60)

@@ -14,7 +14,7 @@ unit-tested against a mocked exchange (test_reconciliation_detects_drift).
 import logging
 from typing import Dict, List
 
-from ..registry.db import connect, DEFAULT_DB_PATH
+from ..registry.db import DEFAULT_DB_PATH, connect
 
 logger = logging.getLogger(__name__)
 

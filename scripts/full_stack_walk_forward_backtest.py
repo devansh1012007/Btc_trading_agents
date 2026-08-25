@@ -50,8 +50,8 @@ import logging
 import shutil
 import sys
 import tempfile
-from datetime import datetime, timedelta, timezone
 from dataclasses import replace as dc_replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -66,27 +66,38 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from src.pipeline import TradingPipeline                                  # noqa: E402
-from src.layers.market_data import MarketDataLayer                        # noqa: E402
-from src.layers.risk_layer import RiskLayer, RiskStateStore               # noqa: E402
-from src.state.contracts import (                                         # noqa: E402
-    ExpertAction, RouterDecision, OpportunityScore,
-)
-from src.labeling.triple_barrier import (                                 # noqa: E402
-    label_triple_barrier, compute_barrier_pcts, barrier_volatility_pct,
-)
-from src.reporting.performance_report import (                            # noqa: E402
-    compute_trade_stats, equity_curve_drawdown_pct, total_return_pct,
-    compute_breakdowns, confidence_calibration, miscalibration_score,
-    momentum_baseline_episodes, buy_and_hold_episodes, chained_equity_curve,
-    success_criteria_check, baseline_verdicts, _sanitize,
-    render_markdown_report,
-)
-from src.registry.db import log_experiment                                # noqa: E402
-from src.utils.config_helpers import load_layered_config                  # noqa: E402
-
 from run import OpenPosition, build_execution_engine, check_position_exit  # noqa: E402
 
+from src.labeling.triple_barrier import (  # noqa: E402
+    barrier_volatility_pct,
+    compute_barrier_pcts,
+    label_triple_barrier,
+)
+from src.layers.market_data import MarketDataLayer  # noqa: E402
+from src.layers.risk_layer import RiskLayer, RiskStateStore  # noqa: E402
+from src.pipeline import TradingPipeline  # noqa: E402
+from src.registry.db import log_experiment  # noqa: E402
+from src.reporting.performance_report import (  # noqa: E402
+    _sanitize,
+    baseline_verdicts,
+    buy_and_hold_episodes,
+    chained_equity_curve,
+    compute_breakdowns,
+    compute_trade_stats,
+    confidence_calibration,
+    equity_curve_drawdown_pct,
+    miscalibration_score,
+    momentum_baseline_episodes,
+    render_markdown_report,
+    success_criteria_check,
+    total_return_pct,
+)
+from src.state.contracts import (  # noqa: E402
+    ExpertAction,
+    OpportunityScore,
+    RouterDecision,
+)
+from src.utils.config_helpers import load_layered_config  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Baseline component swaps
@@ -441,8 +452,8 @@ def generate_synthetic_ohlcv(n_bars: int, seed: int = 42) -> pd.DataFrame:
         price = max(price + rng.normal(drift, vol), 1000.0)
         o = price + rng.normal(0, 3)
         h = max(o, price) + abs(rng.normal(0, vol * 0.8))
-        l = min(o, price) - abs(rng.normal(0, vol * 0.8))
-        rows.append({"timestamp": timestamps[i], "open": o, "high": h, "low": l,
+        low = min(o, price) - abs(rng.normal(0, vol * 0.8))
+        rows.append({"timestamp": timestamps[i], "open": o, "high": h, "low": low,
                      "close": price, "volume": abs(rng.normal(120, 35))})
     return pd.DataFrame(rows)
 
@@ -475,7 +486,7 @@ def run_backtest(df_ohlcv: pd.DataFrame, symbol: str, config: dict,
     # Windows over the continuous replay
     slices, bounds = window_slices(main["bar_ts"], window_bars)
     windows = []
-    for s, (i0, i1) in zip(slices, bounds):
+    for s, (i0, i1) in zip(slices, bounds, strict=False):
         w_trades = trades_in_window(main["trades"], s["start_ts"], s["end_ts"])
         seg_curve = main["equity_curve"][i0:i1]
         wm = finalize(w_trades, seg_curve, initial_equity)

@@ -2,14 +2,12 @@
 CCXT connector for fetching market data.
 Handles normalization, caching, retry logic.
 """
-import ccxt
-from typing import Dict, List, Tuple, Optional
-import pandas as pd
-from datetime import datetime, timedelta
-import os
-import json
-from pathlib import Path
 import logging
+from pathlib import Path
+from typing import Dict, Optional, Tuple
+
+import ccxt
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -21,8 +19,11 @@ class CCXTConnector:
         self.exchange_name = exchange_name
         self.sandbox = sandbox
 
-        try : exchange_class = getattr(ccxt, exchange_name)
-        except Exception as e: logger.error(f"Failed to get exchange_class {e}")
+        try:
+            exchange_class = getattr(ccxt, exchange_name)
+        except AttributeError as e:
+            logger.error(f"Failed to get exchange_class {e}")
+            raise
         self.exchange = exchange_class({
             'enableRateLimit': True,
             'sandbox': sandbox,

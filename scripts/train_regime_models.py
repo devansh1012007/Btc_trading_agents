@@ -18,10 +18,10 @@ import yaml
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from src.layers.market_data import MarketDataLayer
-from src.layers.feature_engine import FeatureEngine
-from src.layers.regime_detector import panic_score, HMM_STATE_LABELS, HMM_OBSERVATION_FEATURES, CLASSIFIER_FEATURE_NAMES
 from src.backtest.walk_forward import WalkForwardSplitter
+from src.layers.feature_engine import FeatureEngine
+from src.layers.market_data import MarketDataLayer
+from src.layers.regime_detector import CLASSIFIER_FEATURE_NAMES, HMM_OBSERVATION_FEATURES, panic_score
 
 
 def load_config(path: str = "config/settings.base.yaml") -> dict:

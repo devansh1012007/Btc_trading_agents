@@ -10,7 +10,8 @@ Usage:
 This is a single-scalar-per-parameter shape. Each individual threshold
 that varies by regime gets its own block with default + by_regime keys.
 """
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
+
 from ..state.contracts import RegimeType
 
 

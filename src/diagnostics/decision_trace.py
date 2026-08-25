@@ -17,13 +17,13 @@ append-only, read with pandas). Kept separate from the trade journal
 numeric record, optimized for training) — this is specifically the
 human-readable "why" narrative, optimized for debugging.
 """
-from dataclasses import dataclass, field, asdict
-from typing import Dict, List, Optional, Any
-from pathlib import Path
 import json
-import traceback
 import logging
+import traceback
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 

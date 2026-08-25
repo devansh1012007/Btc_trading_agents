@@ -12,7 +12,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from ..state.contracts import FeatureVector, RegimeState, RegimeType, FEATURE_SCHEMA_VERSION
+from ..state.contracts import FEATURE_SCHEMA_VERSION, FeatureVector, RegimeState, RegimeType
 from ..utils.rolling_buffer import RollingBarBuffer
 
 logger = logging.getLogger(__name__)
@@ -220,10 +220,10 @@ class RegimeDetector:
             return self._classify_with_rule(feature_vector)
 
         labels = ["trending_up", "trending_down", "chop_range", "panic_spike"]
-        probs = {cls: float(p) for cls, p in zip(classes, proba)}
+        probs = {cls: float(p) for cls, p in zip(classes, proba, strict=False)}
         for label in labels:
             probs.setdefault(label, 0.0)
-        total = sum(probs[l] for l in labels) or 1.0
+        total = sum(probs[lbl] for lbl in labels) or 1.0
         return {k: probs[k] / total for k in labels}
 
     def _classify_with_hmm(self, feature_vector: FeatureVector) -> Dict[str, float]:

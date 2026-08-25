@@ -15,13 +15,13 @@ Usage:
 import argparse
 import logging
 from pathlib import Path
-from typing import List, Dict
+from typing import Dict, List
 
 import pandas as pd
 import yaml
 
 from src.backtest.replay import replay_full_stack
-from src.labeling.triple_barrier import label_triple_barrier, compute_barrier_pcts, barrier_volatility_pct
+from src.labeling.triple_barrier import barrier_volatility_pct, compute_barrier_pcts, label_triple_barrier
 from src.state.contracts import ExpertAction
 
 logging.basicConfig(level=logging.INFO)
@@ -33,9 +33,9 @@ BUILD_FEATURES = None  # populated lazily to avoid a hard import cycle
 
 
 def _build_features_map():
-    from src.experts import trend_expert as trend_mod
-    from src.experts import mean_reversion_expert as mr_mod
     from src.experts import breakout_expert as bo_mod
+    from src.experts import mean_reversion_expert as mr_mod
+    from src.experts import trend_expert as trend_mod
     return {
         "trend_expert": trend_mod.build_features,
         "mean_reversion_expert": mr_mod.build_features,

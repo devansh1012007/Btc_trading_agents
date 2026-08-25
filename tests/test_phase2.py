@@ -5,11 +5,11 @@ Engine completion and the Regime Detection Layer.
 import numpy as np
 import pytest
 
-from src.state.contracts import MarketSnapshot, FeatureVector, RegimeType
-from src.layers.structure_engine import DynamicStructureEngine
-from src.layers.structural_features import attach_structural_features
-from src.layers.regime_detector import RegimeDetector, panic_score
 from src.backtest.walk_forward import WalkForwardSplitter
+from src.layers.regime_detector import RegimeDetector, panic_score
+from src.layers.structural_features import attach_structural_features
+from src.layers.structure_engine import DynamicStructureEngine
+from src.state.contracts import FeatureVector, MarketSnapshot, RegimeType
 
 
 def make_snapshot(timestamp, open_, high, low, close, volume=100.0, symbol="BTC/USDT"):

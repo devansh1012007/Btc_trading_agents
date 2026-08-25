@@ -11,17 +11,24 @@ Phase 5, §6.4: Logs paired (synthetic, real) liquidity samples to a
 Parquet file for calibrate_synthetic_liquidity.py.
 """
 import logging
-import json
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
 
-from ...state.contracts import RiskDecision, RouterDecision, ExpertOutput, MarketSnapshot, ExecutionRecord, ExpertAction, FeatureVector
-from ...liquidity.types import LiquidityEstimate
 from ...liquidity.real_orderbook_adapter import fetch_real_liquidity
 from ...liquidity.synthetic_liquidity_model import estimate_synthetic_liquidity
-from ..execution_engine import ExecutionBackend, simulate_fill, make_client_order_id
+from ...liquidity.types import LiquidityEstimate
+from ...state.contracts import (
+    ExecutionRecord,
+    ExpertAction,
+    ExpertOutput,
+    FeatureVector,
+    MarketSnapshot,
+    RiskDecision,
+    RouterDecision,
+)
+from ..execution_engine import ExecutionBackend, make_client_order_id, simulate_fill
 
 logger = logging.getLogger(__name__)
 

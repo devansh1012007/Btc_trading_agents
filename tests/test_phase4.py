@@ -5,26 +5,31 @@ restart), Execution Engine mode dispatch/idempotency, live-mode safety
 gates, reconciliation, SystemState archive completeness, zone lifecycle
 coverage, and model registry version tracking.
 """
-import pickle
 import numpy as np
 import pytest
 
-from src.state.contracts import (
-    MarketSnapshot, FeatureVector, ZoneMap, RegimeState, RegimeType,
-    ExpertOutput, ExpertOutputs, ExpertAction, RouterDecision, RiskDecision,
-)
-from src.liquidity.synthetic_liquidity_model import estimate_synthetic_liquidity, attach_synthetic_liquidity
-from src.layers.risk_layer import RiskLayer, RiskStateStore, compute_base_size, liquidity_size_multiplier
-from src.execution.execution_engine import ExecutionEngine, make_client_order_id
-from src.execution.backends.paper_sim_backend import PaperSimBackend
 from src.execution.backends.live_backend import LiveBackend, LiveTradingNotConfirmedError
+from src.execution.backends.paper_sim_backend import PaperSimBackend
+from src.execution.execution_engine import ExecutionEngine
 from src.execution.reconciliation import reconcile
-from src.state.serialization import system_state_to_dict
-from src.state.contracts import SystemState
+from src.layers.risk_layer import RiskLayer, RiskStateStore, compute_base_size, liquidity_size_multiplier
 from src.layers.structure_engine import DynamicStructureEngine
-from src.registry import model_registry as reg
+from src.liquidity.synthetic_liquidity_model import attach_synthetic_liquidity, estimate_synthetic_liquidity
 from src.monitoring.drift_monitor import population_stability_index
-
+from src.registry import model_registry as reg
+from src.state.contracts import (
+    ExpertAction,
+    ExpertOutput,
+    ExpertOutputs,
+    FeatureVector,
+    MarketSnapshot,
+    RegimeState,
+    RegimeType,
+    RiskDecision,
+    RouterDecision,
+    SystemState,
+)
+from src.state.serialization import system_state_to_dict
 
 # --------------------------------------------------------------------
 # Helpers
@@ -354,6 +359,7 @@ def test_reconciliation_detects_drift(tmp_path):
 
 def test_full_systemstate_archive_completeness():
     import dataclasses
+
     from src.state import contracts as c
 
     src_text = open("src/state/serialization.py").read()
@@ -376,7 +382,8 @@ def test_realized_pnl_populated_on_no_trade_bars():
 # --------------------------------------------------------------------
 
 def test_zone_event_log_covers_full_lifecycle():
-    from tests.test_phase2 import make_snapshot as make_market_snapshot, _build_pivot_high
+    from tests.test_phase2 import _build_pivot_high
+    from tests.test_phase2 import make_snapshot as make_market_snapshot
 
     engine = DynamicStructureEngine(lookback_bars=50, pivot_window=3, zone_decay_bars=3)
     t, _ = _build_pivot_high(engine)

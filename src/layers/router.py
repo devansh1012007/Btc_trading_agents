@@ -13,7 +13,15 @@ from typing import Dict, Optional
 
 import numpy as np
 
-from ..state.contracts import ExpertOutputs, RegimeState, ZoneMap, OpportunityScore, RouterDecision, ExpertAction, FEATURE_SCHEMA_VERSION
+from ..state.contracts import (
+    FEATURE_SCHEMA_VERSION,
+    ExpertAction,
+    ExpertOutputs,
+    OpportunityScore,
+    RegimeState,
+    RouterDecision,
+    ZoneMap,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +151,7 @@ class Router:
             return self._decide_with_fallback(expert_outputs, opportunity_score)
 
         model_probs = {cls: 0.0 for cls in ROUTER_CLASSES}
-        model_probs.update({cls: float(p) for cls, p in zip(classes, proba) if cls in model_probs})
+        model_probs.update({cls: float(p) for cls, p in zip(classes, proba, strict=False) if cls in model_probs})
 
         confidence_probs = {
             name: (expert_outputs.get_by_name(name).confidence if expert_outputs.get_by_name(name) else 0.0)

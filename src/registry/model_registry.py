@@ -12,12 +12,12 @@ Never auto-promotes: retrain_all.py only ever inserts pending_approval
 rows (§8.2); approve_model.py is the only code path that sets
 approved_active (§8.3).
 """
+import json
 import uuid
 from datetime import datetime, timezone
-from typing import Optional, List, Dict
-import json
+from typing import Dict, List, Optional
 
-from .db import connect, DEFAULT_DB_PATH
+from .db import DEFAULT_DB_PATH, connect
 
 
 def register_version(

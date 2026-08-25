@@ -18,16 +18,14 @@ Usage:
 Requires: Binance testnet API credentials (set via BTC_BOT_API_KEY / BTC_BOT_API_SECRET).
 """
 import argparse
-import json
 import logging
 import os
 import sys
-import traceback
+import sys as _sys
 from datetime import datetime, timezone
 from pathlib import Path
-
-import sys as _sys
 from pathlib import Path as _Path
+
 _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
 
 import ccxt
@@ -64,9 +62,8 @@ class Step1_PlaceOrder(ValidationStep):
 
     def run(self) -> bool:
         try:
-            # Place a minimal limit order
+            # Place a minimal market order (price=None: market order)
             amount = 0.0001  # minimal BTC amount
-            price = None  # market order
             order = self.exchange.create_order(
                 symbol=self.symbol,
                 type="market",
@@ -170,8 +167,8 @@ class Step4_Reconciliation(ValidationStep):
 
     def run(self) -> bool:
         try:
-            from src.execution.reconciliation import reconcile
             from src.connectors.data_source import CCXTConnector
+            from src.execution.reconciliation import reconcile
 
             connector = CCXTConnector("binance", sandbox=True)
             result = reconcile(connector, "BTC/USDT")
@@ -250,10 +247,10 @@ def write_report(steps: list, output_path: str) -> None:
     """Write validation report to markdown file."""
     now = datetime.now(timezone.utc)
     report_lines = [
-        f"# Live Backend Validation Report",
+        "# Live Backend Validation Report",
         f"\nGenerated: {now.isoformat()}",
-        f"\n## Results",
-        f"",
+        "\n## Results",
+        "",
     ]
 
     for step in steps:
@@ -265,7 +262,7 @@ def write_report(steps: list, output_path: str) -> None:
         report_lines.append("")
 
     all_passed = all(s.passed for s in steps)
-    report_lines.append(f"\n## Summary")
+    report_lines.append("\n## Summary")
     report_lines.append(f"\n**Overall:** {'ALL PASSED' if all_passed else 'SOME FAILED'}")
     report_lines.append(f"\nPassed: {sum(1 for s in steps if s.passed)}/{len(steps)}")
 

@@ -24,7 +24,7 @@ import yaml
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from src.registry.model_registry import register_version, get_champion
+from src.registry.model_registry import get_champion, register_version
 
 # component -> (list of [script, extra_args] steps to run in order, output .pkl path)
 COMPONENT_STEPS = {

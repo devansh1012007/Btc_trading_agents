@@ -24,9 +24,9 @@ Usage:
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
-from datetime import datetime, timezone
 
 
 def load_traces(base_dir: str = "data/logs/decision_traces") -> List[dict]:

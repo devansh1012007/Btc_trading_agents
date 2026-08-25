@@ -10,11 +10,10 @@ paper backtest would stop meaning anything about live behavior.
 import hashlib
 import logging
 from abc import ABC, abstractmethod
-from datetime import datetime, timezone
 from typing import Optional, Tuple
 
-from ..state.contracts import RiskDecision, RouterDecision, ExpertOutput, MarketSnapshot, ExecutionRecord, ExpertAction
 from ..liquidity.types import LiquidityEstimate
+from ..state.contracts import ExecutionRecord, ExpertAction, ExpertOutput, MarketSnapshot, RiskDecision, RouterDecision
 
 logger = logging.getLogger(__name__)
 

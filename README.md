@@ -267,6 +267,7 @@ Decision tracing, cross-layer consistency validation, regime-adaptive config, ho
 - Graph neural networks for zone lifecycle
 - Multi-symbol support
 - Real-time alerting (Telegram)
+- Intigrating web jooks for live trading as soon as profitabiliy is atchived
 
 ## Disclaimer
 

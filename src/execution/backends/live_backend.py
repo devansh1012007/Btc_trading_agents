@@ -30,10 +30,10 @@ end-to-end.
 import logging
 from datetime import datetime, timezone
 
-from ...state.contracts import RiskDecision, RouterDecision, ExpertOutput, MarketSnapshot, ExecutionRecord, ExpertAction
-from ...liquidity.types import LiquidityEstimate
 from ...liquidity.real_orderbook_adapter import fetch_real_liquidity
-from ...registry.db import connect, DEFAULT_DB_PATH
+from ...liquidity.types import LiquidityEstimate
+from ...registry.db import DEFAULT_DB_PATH, connect
+from ...state.contracts import ExecutionRecord, ExpertAction, ExpertOutput, MarketSnapshot, RiskDecision, RouterDecision
 from ..execution_engine import ExecutionBackend, make_client_order_id
 
 logger = logging.getLogger(__name__)

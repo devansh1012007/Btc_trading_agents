@@ -17,8 +17,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 from src.backtest.replay import harvest_zone_touch_candidates
-from src.experts.mean_reversion_expert import FEATURE_NAMES, build_features
 from src.backtest.walk_forward import WalkForwardSplitter
+from src.experts.mean_reversion_expert import FEATURE_NAMES, build_features
 
 
 def load_config(path="config/settings.base.yaml") -> dict:
@@ -28,7 +28,7 @@ def load_config(path="config/settings.base.yaml") -> dict:
 
 def train_and_validate(df, splitter):
     import lightgbm as lgb
-    from sklearn.metrics import roc_auc_score, accuracy_score
+    from sklearn.metrics import accuracy_score, roc_auc_score
 
     X = df[FEATURE_NAMES].values
     y = df["label"].values

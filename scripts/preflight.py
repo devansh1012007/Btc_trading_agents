@@ -13,12 +13,10 @@ discover bugs before a session even begins.
 import argparse
 import logging
 import sys
-from pathlib import Path
-
-import yaml
-
 import sys as _sys
+from pathlib import Path
 from pathlib import Path as _Path
+
 _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
@@ -39,7 +37,7 @@ def main():
 
     # Run consistency validation
     try:
-        from src.config.consistency_validator import validate_config_consistency, ConfigConsistencyError
+        from src.config.consistency_validator import ConfigConsistencyError, validate_config_consistency
         validate_config_consistency(config)
     except ConfigConsistencyError as e:
         logger.error(f"Pre-flight FAILED: {e}")

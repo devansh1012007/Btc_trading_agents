@@ -12,11 +12,12 @@ All functions here are pure: trades in, dicts out. No pipeline imports —
 this module is deliberately independent so tests can exercise it without
 constructing the stack.
 """
-from typing import Dict, List, Optional, Tuple
 from datetime import datetime, timezone
+from typing import Dict, List, Optional, Tuple
+
+import math
 
 import numpy as np
-
 
 # ---------------------------------------------------------------------------
 # Trade-sequence metrics
@@ -355,7 +356,6 @@ def baseline_verdicts(strategy: dict, naive_router: dict, unfiltered: dict) -> d
 # JSON sanitization & markdown rendering (§5.4)
 # ---------------------------------------------------------------------------
 
-import math
 
 def _sanitize(obj):
     """Recursively convert numpy scalars and infinities to JSON-safe types."""

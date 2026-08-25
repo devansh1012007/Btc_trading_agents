@@ -16,7 +16,7 @@ from typing import Dict, Optional
 
 import numpy as np
 
-from ..state.contracts import FeatureVector, ZoneMap, RegimeState, ExpertOutput, ExpertAction
+from ..state.contracts import ExpertAction, ExpertOutput, FeatureVector, RegimeState, ZoneMap
 from ..utils.config_helpers import parse_regime_list
 from ..utils.rolling_buffer import RollingBarBuffer
 from .base_expert import BaseExpert, compute_invalidation_distance

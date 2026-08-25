@@ -12,7 +12,15 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from ..state.contracts import ExpertOutputs, RegimeState, ZoneMap, MarketSnapshot, FeatureVector, OpportunityScore, FEATURE_SCHEMA_VERSION
+from ..state.contracts import (
+    FEATURE_SCHEMA_VERSION,
+    ExpertOutputs,
+    FeatureVector,
+    MarketSnapshot,
+    OpportunityScore,
+    RegimeState,
+    ZoneMap,
+)
 from ..utils.config_helpers import parse_regime_list
 
 logger = logging.getLogger(__name__)

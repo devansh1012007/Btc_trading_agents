@@ -13,7 +13,7 @@ constraint), and consistent with how Phase 2/3 handle Parquet elsewhere
 in this codebase.
 """
 from pathlib import Path
-from typing import List, Dict
+from typing import Dict, List
 
 import pandas as pd
 

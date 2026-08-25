@@ -14,7 +14,7 @@ import logging
 import pickle
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Dict
+from typing import Dict, List
 
 import numpy as np
 import pandas as pd
@@ -24,10 +24,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 from src.backtest.replay import replay_full_stack
-from src.labeling.triple_barrier import label_triple_barrier, compute_barrier_pcts, barrier_volatility_pct
+from src.backtest.walk_forward import WalkForwardSplitter
+from src.labeling.triple_barrier import barrier_volatility_pct, compute_barrier_pcts, label_triple_barrier
 from src.layers.risk_layer import FEATURE_NAMES, build_features
 from src.state.contracts import ExpertAction
-from src.backtest.walk_forward import WalkForwardSplitter
 
 
 def load_config(path="config/settings.base.yaml") -> dict:
@@ -84,7 +84,7 @@ def harvest(df_ohlcv: pd.DataFrame, symbol: str, config: dict) -> pd.DataFrame:
 
 def train_and_validate(df: pd.DataFrame, splitter: WalkForwardSplitter):
     import lightgbm as lgb
-    from sklearn.metrics import roc_auc_score, accuracy_score
+    from sklearn.metrics import accuracy_score, roc_auc_score
 
     X = df[FEATURE_NAMES].values
     y = df["label"].values

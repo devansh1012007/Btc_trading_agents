@@ -8,15 +8,14 @@ import pickle
 from datetime import datetime, timezone
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import yaml
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from src.layers.zone_survival_features import ZONE_SURVIVAL_FEATURE_NAMES
 from src.backtest.walk_forward import WalkForwardSplitter
+from src.layers.zone_survival_features import ZONE_SURVIVAL_FEATURE_NAMES
 
 
 def load_config(path: str = "config/settings.base.yaml") -> dict:
@@ -29,7 +28,7 @@ def load_config(path: str = "config/settings.base.yaml") -> dict:
 
 def train_and_validate(df: pd.DataFrame, splitter: WalkForwardSplitter):
     import lightgbm as lgb
-    from sklearn.metrics import roc_auc_score, accuracy_score, brier_score_loss
+    from sklearn.metrics import accuracy_score, brier_score_loss, roc_auc_score
 
     X = df[ZONE_SURVIVAL_FEATURE_NAMES].values
     y = df["label"].values

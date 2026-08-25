@@ -23,14 +23,11 @@ Cross-Layer Consistency Validation (Phase 5, §8). Two mechanisms:
 Raises ConfigConsistencyError on any failure. Used by preflight.py
 before starting live or paper-live sessions.
 """
-from pathlib import Path
-from typing import Dict, List, Optional
 import json
 import logging
 
 import numpy as np
 
-from ..state.contracts import FEATURE_SCHEMA_VERSION
 from ..liquidity.synthetic_liquidity_model import estimate_synthetic_liquidity
 from ..state.contracts import FeatureVector, MarketSnapshot
 
@@ -54,7 +51,6 @@ def validate_unit_consistency(config: dict) -> None:
     # Validate that the synthetic liquidity model's depth output is in USDT
     # and matches the unit expected by the opportunity filter's min_depth_usdt
     opp_cfg = config.get("opportunity_filter", {}).get("hard_rules", {})
-    min_depth_usdt = opp_cfg.get("min_depth_usdt", 10000)
 
     # The synthetic model's depth is computed as:
     # depth_usdt = k_depth * (bar.volume * bar.close) * participation_rate

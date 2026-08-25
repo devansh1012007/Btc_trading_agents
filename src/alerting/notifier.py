@@ -9,7 +9,6 @@ without touching call sites.
 """
 import logging
 import os
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +53,8 @@ class Notifier:
             )
             return False
 
-        import urllib.request
         import urllib.parse
+        import urllib.request
 
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         payload = urllib.parse.urlencode({"chat_id": chat_id, "text": f"[{event_type}] {message}"}).encode()

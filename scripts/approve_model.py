@@ -7,7 +7,7 @@ without changing the underlying registry.
 import argparse
 import json
 
-from src.registry.model_registry import get_pending, get_champion, approve, reject
+from src.registry.model_registry import approve, get_champion, get_pending, reject
 
 
 def format_metrics(metrics_json: str) -> str:
@@ -67,7 +67,7 @@ def main():
             print(f"  -> Promoted {version['version_id']} to approved_active.")
         else:
             reject(version["version_id"], db_path=args.db_path)
-            print(f"  -> Left as reviewed/rejected. Re-run retrain_all.py to produce a new challenger later.")
+            print("  -> Left as reviewed/rejected. Re-run retrain_all.py to produce a new challenger later.")
 
 
 if __name__ == "__main__":
