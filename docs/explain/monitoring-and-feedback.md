@@ -156,7 +156,7 @@ Adding a second trading pair later is a new partition, not a schema change. Path
 
 ## Decision Traces (`src/diagnostics/decision_trace.py`)
 
-One record per bar — the full stage-by-stage journey through the pipeline. Written to `data/logs/decision_traces/` as partitioned JSONL.
+One record per bar — the full stage-by-stage journey through the pipeline. Written to `data/logs/decision_traces/` as partitioned JSONL. Each `StageResult` carries optional `duration_ms`, and each trace carries `total_duration_ms` / `stage_timings_ms` (populated by the pipeline's per-stage timing).
 
 ```bash
 # Full trace for a specific bar
@@ -164,7 +164,20 @@ python scripts/diagnose.py --timestamp 1755900000
 
 # Summary breakdown of all bars
 python scripts/diagnose.py --summary --since 2026-08-01
+
+# Full T±window stage-by-stage replay of one journaled trade
+python scripts/replay_trade.py --list 5
+python scripts/replay_trade.py --trade-id <id>
 ```
+
+### Structured Log Streams
+
+| Stream | Contents |
+|---|---|
+| `data/logs/system.jsonl` | Every log line as JSON (`setup_logging()`) |
+| `data/logs/decisions.jsonl` | One §8-shaped record per bar: regime/expert/opportunity/router/risk/decision (`log_trade_decision()`) |
+| `data/logs/decision_traces/` | Stage-by-stage narrative + latency |
+| `data/logs/faults.jsonl` | System faults with full context |
 
 ### Fault Log
 

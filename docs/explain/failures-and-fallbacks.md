@@ -237,6 +237,9 @@ python scripts/diagnose.py --timestamp 1755900000
 
 # Summary breakdown of all bars
 python scripts/diagnose.py --summary --since 2026-08-01
+
+# Stage-by-stage trade replay (journal + traces + OHLCV)
+python scripts/replay_trade.py --trade-id <id>
 ```
 
 Categories of failure:
@@ -258,6 +261,12 @@ Categories of failure:
 `bid_volume`/`ask_volume` are in base currency (BTC), but `min_depth_usdt` is in quote currency (USDT). Direct comparison was wrong.
 
 **Fix**: Both `evaluate()`'s hard rule and `_liquidity_score()` now multiply by `market.close` before comparing.
+
+### Connector Swallowed AttributeError (Fixed post-Phase 5)
+
+`src/connectors/data_source.py`'s exception handler caught bare `Exception`, which silently swallowed `AttributeError`s from code defects (e.g., a misnamed config key) as if they were transient network failures — turning bugs into mysterious "no data" behavior.
+
+**Fix**: `AttributeError` (and other programming errors) now re-raise; only genuine fetch failures fall back.
 
 ### consecutive_losses_hard Breaker Is Dead
 

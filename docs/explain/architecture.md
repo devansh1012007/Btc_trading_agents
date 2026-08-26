@@ -101,6 +101,7 @@ class StageResult:
     passed: bool
     detail: str              # human-readable: "momentum 0.03% below threshold 0.05%"
     values: Dict[str, float] # actual numbers, for reproducibility
+    duration_ms: Optional[float] = None  # wall-clock stage latency (PRESENTATION §23)
 
 @dataclass(frozen=True)
 class DecisionTrace:
@@ -109,9 +110,44 @@ class DecisionTrace:
     stages: List[StageResult]     # every stage the bar passed through, in order
     terminal_stage: str            # where the journey ended
     terminal_reason: str
+    total_duration_ms: Optional[float] = None            # end-to-end decision latency
+    stage_timings_ms: Optional[Dict[str, float]] = None   # pipeline-internal per-stage latencies
 ```
 
 Written to `data/logs/decision_traces/` as partitioned JSONL (high volume, append-only, read with pandas). Kept separate from the trade journal (completed trades only) and the full `SystemState` Parquet archive (complete numeric record, optimized for training) — this is specifically the human-readable "why" narrative, optimized for debugging.
+
+## Observability Streams
+
+Three append-only JSONL streams, each serving a different consumer:
+
+| Stream | Contents | Consumer |
+|---|---|---|
+| `data/logs/system.jsonl` | All log lines as JSON | `setup_logging()` in `src/utils/logging_setup.py`; wired into both loops of `scripts/run.py` |
+| `data/logs/decisions.jsonl` | One §8-shaped record per bar (regime/expert/opportunity/router/risk/decision) | `log_trade_decision()`; feed for external analysis |
+| `data/logs/decision_traces/` | Full stage-by-stage narrative + latency fields | `diagnose.py`, `replay_trade.py`, dashboard |
+
+**Latency instrumentation**: `_process_bar()` times each stage into
+`TradingPipeline.last_bar_timings` (`features_ms`, `regime_ms`,
+`structure_ms`, `liquidity_ms`, `decisions_ms`); the same numbers flow into
+`DecisionTrace.stage_timings_ms` / `total_duration_ms`. Benchmark:
+`scripts/benchmark_latency.py` (`make latency`). Per-trade stage replay:
+`scripts/replay_trade.py --trade-id <id>`.
+
+## Backtest Harness & Ablations
+
+`scripts/full_stack_walk_forward_backtest.py` runs the full stack (fixed models + window segmentation) against 4 baselines (`buy_and_hold`, `simple_momentum`, `naive_router`, `unfiltered`) and logs every run to `data/registry.db::experiments` (config hash + snapshot + git commit).
+
+Ablation toggles isolate each component's contribution:
+
+```bash
+python scripts/full_stack_walk_forward_backtest.py --input data/raw/BTCUSDT.csv --env paper
+python scripts/full_stack_walk_forward_backtest.py --synthetic 900 --relax-liquidity   # smoke
+  --single-expert trend_expert      # only one expert active
+  --no-risk-layer                   # risk layer auto-approves at base size
+  --no-regime-gating                # strips regime requirements + reject_on_regime
+```
+
+Every `finalize()` emits `turnover_x` alongside returns/drawdown metrics.
 
 ## Regime-Adaptive Config (Phase 5)
 

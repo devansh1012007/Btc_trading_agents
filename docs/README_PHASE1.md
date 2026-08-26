@@ -1,5 +1,7 @@
 # BTC Trading Agent System - PHASE 1: Foundation & Data Pipeline
 
+> **Note (2026-08):** This is a point-in-time completion record. Paths have since changed — tests now live in `tests/{unit,integration,e2e}/`, and manual verification scripts moved to `scripts/verify_*.py`. See the root `README.md` and `AGENTS.md` for the current layout.
+
 ## Overview
 
 This is a **Stage-3 hierarchical multi-expert BTC scalping trading system** designed for 30-40 second trades with structural awareness and regime detection.

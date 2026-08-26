@@ -226,6 +226,7 @@ class StageResult:
     passed: bool
     detail: str              # human-readable: "momentum 0.03% below threshold 0.05%"
     values: Dict[str, float] # actual numbers, for reproducibility
+    duration_ms: Optional[float] = None  # wall-clock stage latency (PRESENTATION §23)
 ```
 
 ### DecisionTrace
@@ -238,9 +239,27 @@ class DecisionTrace:
     stages: List[StageResult]     # every stage the bar passed through, in order
     terminal_stage: str            # where the journey ended
     terminal_reason: str
+    total_duration_ms: Optional[float] = None            # end-to-end decision latency for this bar
+    stage_timings_ms: Optional[Dict[str, float]] = None   # pipeline-internal per-stage latencies
 ```
 
+The latency fields are populated by `TradingPipeline._process_bar()`
+(`pipeline.last_bar_timings` exposes the same numbers for live monitoring)
+and by `scripts/run.py`, which measures end-to-end decision latency around
+`run_live_bar()`. Benchmark harness: `scripts/benchmark_latency.py`
+(`make latency`).
+
 Written to `data/logs/decision_traces/` as partitioned JSONL.
+
+## Structured Log Streams
+
+Three append-only JSONL streams, each with a distinct purpose (don't mix them):
+
+| Stream | Writer | Contents |
+|---|---|---|
+| `data/logs/system.jsonl` | `src/utils/logging_setup.py::setup_logging()` | Every log line as JSON (level, logger, message) |
+| `data/logs/decisions.jsonl` | `log_trade_decision()` via `decision_record_from_state()` | One §8-shaped record per bar: regime/expert/opportunity/router/risk/decision |
+| `data/logs/decision_traces/traces_<date>.jsonl` | `DecisionTraceWriter` | Full stage-by-stage "why" narrative + latency |
 
 ### SystemFault
 

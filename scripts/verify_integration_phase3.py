@@ -9,11 +9,12 @@ checks the round trip -- including the new Decision Layer columns.
 Run directly: python test_integration_phase3.py
 """
 import logging
+
 import numpy as np
 import pandas as pd
 
 from src.backtest.replay import replay_full_stack
-from src.state.serialization import system_state_to_dict, expert_outputs_from_json
+from src.state.serialization import expert_outputs_from_json, system_state_to_dict
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

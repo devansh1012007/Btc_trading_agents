@@ -3,7 +3,7 @@
 ###############################################################################
 
 system:
-  data_granularity: "30s"                # "10s", "30s", "1m", "5m" -- config only, no code change to switch
+  data_granularity: "1m"                 # "10s", "30s", "1m", "5m" -- config only, no code change to switch
   exchange: "binance"
   sandbox: true
   symbol: "BTC/USDT"

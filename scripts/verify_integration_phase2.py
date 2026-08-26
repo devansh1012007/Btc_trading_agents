@@ -11,14 +11,15 @@ round trip.
 Run directly: python test_integration_phase2.py
 """
 import logging
+
 import numpy as np
 import pandas as pd
 
-from src.layers.market_data import MarketDataLayer
 from src.layers.feature_engine import FeatureEngine
+from src.layers.market_data import MarketDataLayer
 from src.layers.regime_detector import RegimeDetector
-from src.layers.structure_engine import DynamicStructureEngine
 from src.layers.structural_features import attach_structural_features
+from src.layers.structure_engine import DynamicStructureEngine
 from src.state.contracts import SystemState
 from src.state.serialization import system_state_to_dict, zone_map_from_json
 

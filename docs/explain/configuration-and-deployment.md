@@ -65,12 +65,13 @@ Full configuration. All config blocks:
 | `backtest` | train_bars, test_bars, step_bars, embargo_bars |
 | `liquidity` | synthetic params, real_order_book depth_limit |
 | `risk` | sizing, hard_rules, circuit_breakers, ml_model |
-| `execution` | mode, order_type, slippage, confirm_real_money, secrets |
+| `execution` | mode, order_type, slippage, confirm_real_money, secrets, paper-sim realism knobs |
 | `retraining` | schedule, components, promotion_margin_pct, min_validation_samples |
 | `monitoring` | drift psi_alert_threshold, performance expectancy_gap_alert_threshold |
 | `alerting` | enabled, backend, telegram env vars, notify_on |
 | `storage` | registry_db, system_state_archive, zone_events |
 | `logging` | level, format |
+| `config_management` | hot_reload safe/excluded paths |
 
 ### `settings.paper.yaml`
 
@@ -157,6 +158,20 @@ Controls execution backend: `paper_sim` | `paper_live` | `live`. Set in env over
 ### `execution.confirm_real_money`
 
 Second, separate flag from mode. Both required for live orders. Guarded by `LiveTradingNotConfirmedError`.
+
+### `execution.*` Paper-Sim Realism Knobs
+
+Default OFF; deterministic (no RNG — rejection uses a SHA-256 hash roll over
+`timestamp|symbol|side`, so runs are reproducible):
+
+```yaml
+execution:
+  simulated_latency_ms: 0.0          # >0: shifts fill_timestamp, adverse fill adjustment
+  latency_adverse_pct_per_100ms: 0.01  # % adverse fill per 100ms latency
+  order_rejection_rate: 0.0          # >0: deterministic rejection rate for stress tests
+```
+
+Used to stress-test cost sensitivity and breaker paths without changing default backtest behavior. See `docs/explain/risk-and-execution.md`.
 
 ### `risk.circuit_breakers.*`
 
@@ -256,6 +271,26 @@ python scripts/run.py --mode live --env live
 Continuous polling loop. Poll interval derived from `system.data_granularity`. Attaches real order-book liquidity (paper-live/live modes). Runs until killed or `data/control/EMERGENCY_STOP` file is created.
 
 **Requirements**: Real credentials + `confirm_real_money: true` + `execution.mode: "live"`.
+
+### Structured Logging (both modes)
+
+Both loops call `setup_logging()` (`src/utils/logging_setup.py`) at start:
+all log lines go to console **and** `data/logs/system.jsonl`; each bar's
+§8-shaped decision record is appended to `data/logs/decisions.jsonl` via
+`log_trade_decision(decision_record_from_state(state))`.
+
+## Packaging & Local Tooling
+
+| File | Purpose |
+|---|---|
+| `pyproject.toml` | Installable package (`pip install -e ".[dev]"`); deps mirror `requirements.txt` — keep in sync (Docker installs from requirements.txt) |
+| extras | `dev` = ruff, mypy, pytest-cov; `demo` = streamlit, matplotlib |
+| `Makefile` | `make check` = lint + typecheck + all tests; also unit/integration/e2e/coverage/backtest/latency/figures/demo/preflight |
+| `.github/workflows/ci.yml` | CI: ruff → mypy → pytest with coverage artifact |
+
+mypy is strict (`disallow_untyped_defs`) on `src/state/*` and
+`src/reporting/*`; everything else lenient. New modules should be fully
+annotated regardless.
 
 ## Docker Deployment
 

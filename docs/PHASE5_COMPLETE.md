@@ -1,5 +1,7 @@
 # PHASE 5 IMPLEMENTATION COMPLETE ✅
 
+> **Note (2026-08):** This is a point-in-time completion record. Paths have since changed — tests now live in `tests/{unit,integration,e2e}/`, and manual verification scripts moved to `scripts/verify_*.py`. See the root `README.md` and `AGENTS.md` for the current layout.
+
 ## Summary
 
 **PHASE 5: Diagnostics, Adaptive Configuration & Performance Intelligence** is implemented per the plan. 53/53 tests pass (unchanged from Phase 4), all explicitly-flagged gaps from Phase 4 are closed, and the system now has:

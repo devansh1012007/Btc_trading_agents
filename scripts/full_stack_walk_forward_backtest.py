@@ -74,7 +74,7 @@ from src.labeling.triple_barrier import (  # noqa: E402
     label_triple_barrier,
 )
 from src.layers.market_data import MarketDataLayer  # noqa: E402
-from src.layers.risk_layer import RiskLayer, RiskStateStore  # noqa: E402
+from src.layers.risk_layer import RiskLayer, RiskStateStore, compute_base_size  # noqa: E402
 from src.pipeline import TradingPipeline  # noqa: E402
 from src.registry.db import log_experiment  # noqa: E402
 from src.reporting.performance_report import (  # noqa: E402
@@ -84,6 +84,7 @@ from src.reporting.performance_report import (  # noqa: E402
     chained_equity_curve,
     compute_breakdowns,
     compute_trade_stats,
+    compute_turnover,
     confidence_calibration,
     equity_curve_drawdown_pct,
     miscalibration_score,
@@ -94,7 +95,9 @@ from src.reporting.performance_report import (  # noqa: E402
 )
 from src.state.contracts import (  # noqa: E402
     ExpertAction,
+    ExpertOutputs,
     OpportunityScore,
+    RiskDecision,
     RouterDecision,
 )
 from src.utils.config_helpers import load_layered_config  # noqa: E402
@@ -158,6 +161,66 @@ class UngatedOpportunityFilter:
         return dc_replace(score, tradable=True, tradable_probability=max(score.tradable_probability, 0.999))
 
 
+class SingleExpertLayer:
+    """
+    Ablation (--single-expert <name>, §13): keep only one expert's output,
+    so the router chooses among that expert and no-trade. Isolates what
+    each individual expert contributes versus the full ensemble.
+    """
+
+    def __init__(self, inner, expert_name: str):
+        self._inner = inner
+        self._expert_name = expert_name
+
+    def evaluate(self, fv, zone_map, regime_state) -> ExpertOutputs:
+        outputs = self._inner.evaluate(fv, zone_map, regime_state)
+        keep = outputs.get_by_name(self._expert_name)
+        if keep is None:
+            return ExpertOutputs(timestamp=outputs.timestamp, symbol=outputs.symbol, outputs={})
+        return ExpertOutputs(timestamp=outputs.timestamp, symbol=outputs.symbol,
+                             outputs={self._expert_name: keep})
+
+
+class AutoApproveRiskLayer:
+    """
+    Ablation (--no-risk-layer, §13 'what does the Risk Layer buy?'): every
+    candidate the router selects is approved at risk-formula base size
+    (equity × risk_pct ÷ stop distance) with NO liquidity reduction, NO
+    caps, NO breakers gating entries. The persistent store stays live so
+    equity/drawdown accounting in the loop keeps working identically.
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.store = inner.store          # loop reads/writes store directly
+        self.breaker_cfg = inner.breaker_cfg
+
+    def evaluate(self, router_decision, expert_outputs, regime_state, zone_map, fv, market, equity) -> RiskDecision:
+        ts, sym = router_decision.timestamp, router_decision.symbol
+        if router_decision.selected_expert == "no_trade":
+            return RiskDecision(timestamp=ts, symbol=sym, approved=False, risk_score=0.0,
+                                base_size=0.0, adjusted_size=0.0, size_reduction_pct=100.0,
+                                rejection_reason="no_trade_selected")
+        expert_output = expert_outputs.get_by_name(router_decision.selected_expert)
+        if expert_output is None or expert_output.action == ExpertAction.NO_TRADE:
+            return RiskDecision(timestamp=ts, symbol=sym, approved=False, risk_score=0.0,
+                                base_size=0.0, adjusted_size=0.0, size_reduction_pct=100.0,
+                                rejection_reason="selected_expert_has_no_candidate")
+        base = compute_base_size(equity, expert_output, self._inner.sizing_cfg)
+        return RiskDecision(timestamp=ts, symbol=sym, approved=True, risk_score=0.0,
+                            base_size=base, adjusted_size=base, size_reduction_pct=0.0,
+                            rejection_reason=None)
+
+    def record_trade(self, timestamp: int) -> None:
+        self._inner.record_trade(timestamp)
+
+    def advance_bar(self) -> None:
+        self._inner.advance_bar()
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
 # ---------------------------------------------------------------------------
 # One full-stack pass
 # ---------------------------------------------------------------------------
@@ -176,22 +239,31 @@ def run_full_stack_pass(df_ohlcv: pd.DataFrame, symbol: str, config: dict,
                         initial_equity: float,
                         router_override=None,
                         bypass_filter: bool = False,
-                        collect_expert_candidates: bool = False) -> dict:
+                        collect_expert_candidates: bool = False,
+                        single_expert: Optional[str] = None,
+                        disable_risk_layer: bool = False) -> dict:
     """
     Run the complete stack bar-by-bar over df_ohlcv (mirrors run.py's
     run_historical loop body exactly — exits first, config-driven position
     limit, rate limits, breaker trips) WITHOUT touching production stores.
     Returns trades, bar-aligned equity curve, expert candidates, router
     calibration pairs.
+
+    Ablation hooks (§13 ladder rows): single_expert keeps one expert only;
+    disable_risk_layer auto-approves at base size.
     """
     pipeline = TradingPipeline(symbol=symbol, config=copy.deepcopy(config))
     if router_override is not None:
         pipeline.router = router_override
     if bypass_filter:
         pipeline.opportunity_filter = UngatedOpportunityFilter(pipeline.opportunity_filter)
+    if single_expert is not None:
+        pipeline.expert_layer = SingleExpertLayer(pipeline.expert_layer, single_expert)
 
     tmp_dir = tempfile.mkdtemp(prefix="fsb_pass_")
     risk_layer = _fresh_risk_layer(config, tmp_dir)
+    if disable_risk_layer:
+        risk_layer = AutoApproveRiskLayer(risk_layer)
     exec_engine = build_execution_engine(config, pipeline.connector, symbol)
     fee_pct = config.get("labeling", {}).get("fee_pct", 0.04)
 
@@ -380,6 +452,9 @@ def finalize(trades: List[dict], curve: List[float], initial_equity: float) -> d
     stats = compute_trade_stats(trades)
     stats["total_return_pct"] = total_return_pct(initial_equity, curve[-1] if curve else initial_equity)
     stats["max_drawdown_pct"] = round(equity_curve_drawdown_pct(curve), 4)
+    turnover_x, notional = compute_turnover(trades, initial_equity)
+    stats["turnover_x"] = round(turnover_x, 3) if turnover_x is not None else None
+    stats["total_notional_usdt"] = round(notional, 2)
     return stats
 
 
@@ -458,15 +533,46 @@ def generate_synthetic_ohlcv(n_bars: int, seed: int = 42) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def strip_regime_gating(config: dict) -> dict:
+    """
+    Ablation (--no-regime-gating, §13): remove every regime-dependent gate
+    — experts accept any regime at any confidence, the opportunity filter
+    and risk layer stop rejecting on regime. Regime FEATURES still flow
+    (they inform models); only the hard gating is removed.
+    """
+    cfg = copy.deepcopy(config)
+    for expert_cfg in (cfg.get("experts", {}) or {}).values():
+        if isinstance(expert_cfg, dict):
+            expert_cfg["regime_requirement"] = []
+            expert_cfg["regime_confidence_floor"] = 0.0
+    for section in ("opportunity_filter", "risk"):
+        hard = ((cfg.get(section, {}) or {}).get("hard_rules", {}) or {})
+        if "reject_on_regime" in hard or hard != {}:
+            hard["reject_on_regime"] = []
+    return cfg
+
+
 def run_backtest(df_ohlcv: pd.DataFrame, symbol: str, config: dict,
                  initial_equity: float = 10000.0, window_bars: int = 1440,
-                 skip_baselines: bool = False) -> dict:
+                 skip_baselines: bool = False,
+                 single_expert: Optional[str] = None,
+                 disable_risk_layer: bool = False,
+                 disable_regime_gating: bool = False) -> dict:
     labeling_fee = config.get("labeling", {}).get("fee_pct", 0.04)
     fee_rt_pct = labeling_fee * 2
 
+    ablation_applied = bool(single_expert or disable_risk_layer or disable_regime_gating)
+    if disable_regime_gating:
+        config = strip_regime_gating(config)
+
     logger.info("Pass 1/3: full stack (main)...")
+    main_pass_kwargs = {}
+    if single_expert:
+        main_pass_kwargs["single_expert"] = single_expert
+    if disable_risk_layer:
+        main_pass_kwargs["disable_risk_layer"] = True
     main = run_full_stack_pass(df_ohlcv, symbol, config, initial_equity,
-                               collect_expert_candidates=True)
+                               collect_expert_candidates=True, **main_pass_kwargs)
     snapshots: list = main["snapshots"]
 
     naive_res = unfiltered_res = None
@@ -541,6 +647,12 @@ def run_backtest(df_ohlcv: pd.DataFrame, symbol: str, config: dict,
         "granularity": config.get("system", {}).get("data_granularity", "1m"),
         "symbol": symbol,
         "initial_equity": initial_equity,
+        "ablation": {
+            "single_expert": single_expert,
+            "risk_layer_disabled": disable_risk_layer,
+            "regime_gating_disabled": disable_regime_gating,
+            "applied": ablation_applied,
+        },
         "input": {
             "n_bars": int(len(snapshots)),
             "start_ts": ts_all[0] if ts_all else None,
@@ -576,6 +688,12 @@ def main():
                         help="Relax spread/depth/edge hard rules in-memory (documented local "
                              "relaxation; measures pipeline behavior, NOT production edge)")
     parser.add_argument("--skip-baselines", action="store_true")
+    parser.add_argument("--single-expert", default=None, metavar="NAME",
+                        help="Ablation: keep only this expert's output (e.g. trend_expert)")
+    parser.add_argument("--no-risk-layer", action="store_true",
+                        help="Ablation: auto-approve at base size — no caps/breakers/liquidity sizing")
+    parser.add_argument("--no-regime-gating", action="store_true",
+                        help="Ablation: experts/filter/risk stop gating on regime")
     parser.add_argument("--report-dir", default="data/reports")
     args = parser.parse_args()
 
@@ -605,7 +723,10 @@ def main():
     symbol = args.symbol or config.get("system", {}).get("symbol", "BTC/USDT")
 
     report = run_backtest(df, symbol, config, args.initial_equity,
-                          args.window_bars, args.skip_baselines)
+                          args.window_bars, args.skip_baselines,
+                          single_expert=args.single_expert,
+                          disable_risk_layer=args.no_risk_layer,
+                          disable_regime_gating=args.no_regime_gating)
     report["config_hash"] = config_hash(config)
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")

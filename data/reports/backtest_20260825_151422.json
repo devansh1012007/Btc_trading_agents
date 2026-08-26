@@ -1,0 +1,463 @@
+{
+  "generated_at": "2026-08-25T15:14:22.416270+00:00",
+  "granularity": "30s",
+  "symbol": "BTC/USDT",
+  "initial_equity": 10000.0,
+  "ablation": {
+    "single_expert": null,
+    "risk_layer_disabled": false,
+    "regime_gating_disabled": false,
+    "applied": false
+  },
+  "input": {
+    "n_bars": 900,
+    "start_ts": 1787670780,
+    "end_ts": 1787724720
+  },
+  "windows": [
+    {
+      "index": 0,
+      "start_ts": 1787671320,
+      "end_ts": 1787724720,
+      "n_bars": 891,
+      "metrics": {
+        "n_trades": 7,
+        "win_rate_pct": 0.0,
+        "profit_factor": 0.0,
+        "expectancy_per_trade_pct": -0.06765220335029723,
+        "avg_win_pct": null,
+        "avg_loss_pct": -0.06765220335029723,
+        "sharpe_ratio": -4.428258131628985,
+        "sortino_ratio": -0.9754376538624985,
+        "gross_win_pct": 0.0,
+        "gross_loss_pct": 0.47356542345208064,
+        "total_return_pct": -0.06441145775443191,
+        "max_drawdown_pct": 0.0644,
+        "turnover_x": 1.0,
+        "total_notional_usdt": 9997.59
+      }
+    }
+  ],
+  "aggregate": {
+    "n_trades": 7,
+    "win_rate_pct": 0.0,
+    "profit_factor": 0.0,
+    "expectancy_per_trade_pct": -0.06765220335029723,
+    "avg_win_pct": null,
+    "avg_loss_pct": -0.06765220335029723,
+    "sharpe_ratio": -4.428258131628985,
+    "sortino_ratio": -0.9754376538624985,
+    "gross_win_pct": 0.0,
+    "gross_loss_pct": 0.47356542345208064,
+    "total_return_pct": -0.06441145775443191,
+    "max_drawdown_pct": 0.0644,
+    "turnover_x": 1.0,
+    "total_notional_usdt": 9997.59
+  },
+  "aggregate_breakdowns": {
+    "by_expert": {
+      "trend_expert": {
+        "n_trades": 7,
+        "win_rate_pct": 0.0,
+        "expectancy_per_trade_pct": -0.06765220335029723,
+        "total_pnl_usdt": -6.441145775446342
+      }
+    },
+    "by_regime": {
+      "trending_down": {
+        "n_trades": 7,
+        "win_rate_pct": 0.0,
+        "expectancy_per_trade_pct": -0.06765220335029723,
+        "total_pnl_usdt": -6.441145775446342
+      }
+    },
+    "by_hour_of_day": {
+      "3": {
+        "n_trades": 1,
+        "win_rate_pct": 0.0,
+        "expectancy_per_trade_pct": -0.052889542477096735,
+        "total_pnl_usdt": -1.0577908495419348
+      },
+      "4": {
+        "n_trades": 2,
+        "win_rate_pct": 0.0,
+        "expectancy_per_trade_pct": -0.058917847242884715,
+        "total_pnl_usdt": -2.356325764108671
+      },
+      "5": {
+        "n_trades": 4,
+        "win_rate_pct": 0.0,
+        "expectancy_per_trade_pct": -0.07571004662230361,
+        "total_pnl_usdt": -3.0270291617957366
+      }
+    },
+    "by_day_of_week": {
+      "2": {
+        "n_trades": 7,
+        "win_rate_pct": 0.0,
+        "expectancy_per_trade_pct": -0.06765220335029723,
+        "total_pnl_usdt": -6.441145775446342
+      }
+    }
+  },
+  "baselines": {
+    "naive_router": {
+      "n_trades": 7,
+      "win_rate_pct": 0.0,
+      "profit_factor": 0.0,
+      "expectancy_per_trade_pct": -0.06765220335029723,
+      "avg_win_pct": null,
+      "avg_loss_pct": -0.06765220335029723,
+      "sharpe_ratio": -4.428258131628985,
+      "sortino_ratio": -0.9754376538624985,
+      "gross_win_pct": 0.0,
+      "gross_loss_pct": 0.47356542345208064,
+      "total_return_pct": -0.06441145775443191,
+      "max_drawdown_pct": 0.0644,
+      "turnover_x": 1.0,
+      "total_notional_usdt": 9997.59
+    },
+    "unfiltered": {
+      "n_trades": 25,
+      "win_rate_pct": 0.0,
+      "profit_factor": 0.0,
+      "expectancy_per_trade_pct": -0.08252140673071341,
+      "avg_win_pct": null,
+      "avg_loss_pct": -0.08252140673071341,
+      "sharpe_ratio": -9.79371307892492,
+      "sortino_ratio": -0.9948275595050164,
+      "gross_win_pct": 0.0,
+      "gross_loss_pct": 2.0630351682678354,
+      "total_return_pct": -0.23087970483227638,
+      "max_drawdown_pct": 0.2309,
+      "turnover_x": 2.778,
+      "total_notional_usdt": 27778.76
+    },
+    "simple_momentum": {
+      "n_trades": 10,
+      "win_rate_pct": 30.0,
+      "profit_factor": 17.099558415786767,
+      "expectancy_per_trade_pct": 1.6946588579173703,
+      "avg_win_pct": 5.999733530449639,
+      "avg_loss_pct": -0.1503731445964591,
+      "sharpe_ratio": 0.5686291361990758,
+      "sortino_ratio": 13.405951475708669,
+      "gross_win_pct": 17.999200591348917,
+      "gross_loss_pct": 1.0526120121752136,
+      "total_return_pct": 17.80379243984831,
+      "max_drawdown_pct": 1.0479,
+      "turnover_x": 0.0,
+      "total_notional_usdt": 0.0
+    },
+    "buy_and_hold": {
+      "n_trades": 1,
+      "win_rate_pct": 0.0,
+      "profit_factor": 0.0,
+      "expectancy_per_trade_pct": -6.678352004541333,
+      "avg_win_pct": null,
+      "avg_loss_pct": -6.678352004541333,
+      "sharpe_ratio": null,
+      "sortino_ratio": -1.0,
+      "gross_win_pct": 0.0,
+      "gross_loss_pct": 6.678352004541333,
+      "total_return_pct": -6.678352004541344,
+      "max_drawdown_pct": 6.6784,
+      "turnover_x": 0.0,
+      "total_notional_usdt": 0.0
+    }
+  },
+  "baseline_verdicts": {
+    "router_vs_naive_expectancy": "INDISTINGUISHABLE",
+    "router_vs_naive_sharpe": "INDISTINGUISHABLE",
+    "filter_vs_unfiltered_expectancy": "ADDS_VALUE",
+    "filter_vs_unfiltered_sharpe": "ADDS_VALUE"
+  },
+  "calibration": {
+    "experts": {
+      "breakout_expert": [
+        {
+          "bucket": "0.0-0.1",
+          "n": 0,
+          "avg_predicted_confidence": null,
+          "realized_win_rate_pct": null
+        },
+        {
+          "bucket": "0.1-0.2",
+          "n": 0,
+          "avg_predicted_confidence": null,
+          "realized_win_rate_pct": null
+        },
+        {
+          "bucket": "0.2-0.3",
+          "n": 0,
+          "avg_predicted_confidence": null,
+          "realized_win_rate_pct": null
+        },
+        {
+          "bucket": "0.3-0.4",
+          "n": 0,
+          "avg_predicted_confidence": null,
+          "realized_win_rate_pct": null
+        },
+        {
+          "bucket": "0.4-0.5",
+          "n": 0,
+          "avg_predicted_confidence": null,
+          "realized_win_rate_pct": null
+        },
+        {
+          "bucket": "0.5-0.6",
+          "n": 51,
+          "avg_predicted_confidence": 0.5,
+          "realized_win_rate_pct": 0.0
+        },
+        {
+          "bucket": "0.6-0.7",
+          "n": 0,
+          "avg_predicted_confidence": null,
+          "realized_win_rate_pct": null
+        },
+        {
+          "bucket": "0.7-0.8",
+          "n": 0,
+          "avg_predicted_confidence": null,
+          "realized_win_rate_pct": null
+        },
+        {
+          "bucket": "0.8-0.9",
+          "n": 0,
+          "avg_predicted_confidence": null,
+          "realized_win_rate_pct": null
+        },
+        {
+          "bucket": "0.9-1.0",
+          "n": 0,
+          "avg_predicted_confidence": null,
+          "realized_win_rate_pct": null
+        }
+      ],
+      "mean_reversion_expert": [
+        {
+          "bucket": "0.0-0.1",
+          "n": 0,
+          "avg_predicted_confidence": null,
+          "realized_win_rate_pct": null
+        },
+        {
+          "bucket": "0.1-0.2",
+          "n": 0,
+          "avg_predicted_confidence": null,
+          "realized_win_rate_pct": null
+        },
+        {
+          "bucket": "0.2-0.3",
+          "n": 0,
+          "avg_predicted_confidence": null,
+          "realized_win_rate_pct": null
+        },
+        {
+          "bucket": "0.3-0.4",
+          "n": 0,
+          "avg_predicted_confidence": null,
+          "realized_win_rate_pct": null
+        },
+        {
+          "bucket": "0.4-0.5",
+          "n": 0,
+          "avg_predicted_confidence": null,
+          "realized_win_rate_pct": null
+        },
+        {
+          "bucket": "0.5-0.6",
+          "n": 8,
+          "avg_predicted_confidence": 0.55,
+          "realized_win_rate_pct": 0.0
+        },
+        {
+          "bucket": "0.6-0.7",
+          "n": 0,
+          "avg_predicted_confidence": null,
+          "realized_win_rate_pct": null
+        },
+        {
+          "bucket": "0.7-0.8",
+          "n": 0,
+          "avg_predicted_confidence": null,
+          "realized_win_rate_pct": null
+        },
+        {
+          "bucket": "0.8-0.9",
+          "n": 0,
+          "avg_predicted_confidence": null,
+          "realized_win_rate_pct": null
+        },
+        {
+          "bucket": "0.9-1.0",
+          "n": 0,
+          "avg_predicted_confidence": null,
+          "realized_win_rate_pct": null
+        }
+      ],
+      "trend_expert": [
+        {
+          "bucket": "0.0-0.1",
+          "n": 0,
+          "avg_predicted_confidence": null,
+          "realized_win_rate_pct": null
+        },
+        {
+          "bucket": "0.1-0.2",
+          "n": 0,
+          "avg_predicted_confidence": null,
+          "realized_win_rate_pct": null
+        },
+        {
+          "bucket": "0.2-0.3",
+          "n": 0,
+          "avg_predicted_confidence": null,
+          "realized_win_rate_pct": null
+        },
+        {
+          "bucket": "0.3-0.4",
+          "n": 0,
+          "avg_predicted_confidence": null,
+          "realized_win_rate_pct": null
+        },
+        {
+          "bucket": "0.4-0.5",
+          "n": 0,
+          "avg_predicted_confidence": null,
+          "realized_win_rate_pct": null
+        },
+        {
+          "bucket": "0.5-0.6",
+          "n": 0,
+          "avg_predicted_confidence": null,
+          "realized_win_rate_pct": null
+        },
+        {
+          "bucket": "0.6-0.7",
+          "n": 607,
+          "avg_predicted_confidence": 0.5999999999999999,
+          "realized_win_rate_pct": 0.0
+        },
+        {
+          "bucket": "0.7-0.8",
+          "n": 0,
+          "avg_predicted_confidence": null,
+          "realized_win_rate_pct": null
+        },
+        {
+          "bucket": "0.8-0.9",
+          "n": 0,
+          "avg_predicted_confidence": null,
+          "realized_win_rate_pct": null
+        },
+        {
+          "bucket": "0.9-1.0",
+          "n": 0,
+          "avg_predicted_confidence": null,
+          "realized_win_rate_pct": null
+        }
+      ]
+    },
+    "expert_miscalibration_scores": {
+      "breakout_expert": 0.5,
+      "mean_reversion_expert": 0.55,
+      "trend_expert": 0.5999999999999999
+    },
+    "router": [
+      {
+        "bucket": "0.0-0.1",
+        "n": 0,
+        "avg_predicted_confidence": null,
+        "realized_win_rate_pct": null
+      },
+      {
+        "bucket": "0.1-0.2",
+        "n": 0,
+        "avg_predicted_confidence": null,
+        "realized_win_rate_pct": null
+      },
+      {
+        "bucket": "0.2-0.3",
+        "n": 0,
+        "avg_predicted_confidence": null,
+        "realized_win_rate_pct": null
+      },
+      {
+        "bucket": "0.3-0.4",
+        "n": 0,
+        "avg_predicted_confidence": null,
+        "realized_win_rate_pct": null
+      },
+      {
+        "bucket": "0.4-0.5",
+        "n": 0,
+        "avg_predicted_confidence": null,
+        "realized_win_rate_pct": null
+      },
+      {
+        "bucket": "0.5-0.6",
+        "n": 0,
+        "avg_predicted_confidence": null,
+        "realized_win_rate_pct": null
+      },
+      {
+        "bucket": "0.6-0.7",
+        "n": 7,
+        "avg_predicted_confidence": 0.6,
+        "realized_win_rate_pct": 0.0
+      },
+      {
+        "bucket": "0.7-0.8",
+        "n": 0,
+        "avg_predicted_confidence": null,
+        "realized_win_rate_pct": null
+      },
+      {
+        "bucket": "0.8-0.9",
+        "n": 0,
+        "avg_predicted_confidence": null,
+        "realized_win_rate_pct": null
+      },
+      {
+        "bucket": "0.9-1.0",
+        "n": 0,
+        "avg_predicted_confidence": null,
+        "realized_win_rate_pct": null
+      }
+    ],
+    "router_miscalibration_score": 0.6,
+    "note": "Expert outcomes labeled via triple-barrier proxy on every candidate bar (independent of routing/filtering); router outcomes are executed trades only."
+  },
+  "success_criteria": [
+    {
+      "criterion": "positive_expectancy_after_fees",
+      "target": "expectancy_per_trade_pct > 0",
+      "actual": -0.06765220335029723,
+      "pass": false
+    },
+    {
+      "criterion": "max_drawdown_below_8pct",
+      "target": "max_drawdown_pct < 8.0",
+      "actual": 0.0644,
+      "pass": true
+    },
+    {
+      "criterion": "win_rate_beats_simple_momentum",
+      "target": "strategy win_rate > simple_momentum win_rate",
+      "actual": 0.0,
+      "baseline_actual": 30.0,
+      "pass": false
+    },
+    {
+      "criterion": "risk_adjusted_return_beats_simple_momentum",
+      "target": "strategy sharpe > simple_momentum sharpe",
+      "actual": -4.428258131628985,
+      "baseline_actual": 0.5686291361990758,
+      "pass": false
+    }
+  ],
+  "config_hash": "cfdbb414ed24dc02"
+}

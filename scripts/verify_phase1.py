@@ -15,7 +15,7 @@ def verify_phase1():
 
     steps = [
         ("1. Check dependencies installed", "pip list | grep -E 'pandas|numpy|ccxt|lightgbm'"),
-        ("2. Run unit tests", "python -m pytest tests/test_phase1.py -v --tb=short"),
+        ("2. Run unit tests", "python -m pytest tests/unit/test_phase1.py -v --tb=short"),
         ("3. Run integration test", "python test_integration.py"),
     ]
 

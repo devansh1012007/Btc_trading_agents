@@ -1,274 +1,207 @@
 # Btc_trading_agents
 
-A modular, multi-expert BTC scalping trading agent with regime-aware routing, dynamic market structure detection, and a full risk/execution/feedback pipeline.
+**A modular, regime-aware, multi-expert BTC trading research platform** —
+built to study adaptive strategy selection, risk-aware execution, and
+robustness under changing market conditions. Profitability is one
+experimental outcome this system can measure, not the project's claim.
 
-## Overview
+[![CI](https://github.com/devansh1012007/Btc_trading_agents/actions/workflows/ci.yml/badge.svg)](https://github.com/devansh1012007/Btc_trading_agents/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Tests](https://img.shields.io/badge/tests-119%20passing-brightgreen)
 
-This project builds a layered decision engine for BTC/USDT scalping (30s–5m timeframes). Instead of a single monolithic model, the system separates perception, opportunity validation, expert decision-making, routing, risk control, and execution into independent, composable layers. Each layer can be trained, evaluated, and retrained independently.
+---
 
-## Why This Approach
+## The Problem
 
-Single-model trading systems tend to overfit to one market regime, produce confusing activity in bad conditions, and lack a safety mechanism that can override a confident but wrong prediction. This architecture addresses those limitations by:
+Single-model trading systems fail in predictable ways:
 
-- **Specialized experts** — each trained on the market conditions where it has edge
-- **Regime detection** — the system knows whether it's trending, chopping, or panicking before deciding
-- **Opportunity filtering** — hard rules reject trades where fees/slippage exceed expected edge
-- **Independent risk layer** — circuit breakers and position sizing can veto any decision
-- **Adaptive retraining** — walk-forward splits with purge + embargo prevent look-ahead leakage
+- they overfit to one market regime and fall apart when it shifts,
+- they can't tell "confident" from "right",
+- they have no independent mechanism to say **no**,
+- their backtests quietly leak future information.
 
-## Architecture
+This project treats those failure modes as first-class design constraints.
+
+## The Design
+
+Instead of one model, a layered decision engine for BTC/USDT scalping
+(30s–5m), where each layer is independently trainable, testable, and
+replaceable — and a veto anywhere kills the trade:
 
 ```
-Market Data → Feature Engine → Dynamic Structure → Regime Detection
-     → Expert Layer → Opportunity Filter → Router → Risk Layer → Execution → Feedback
+Market Data → Feature Engine → Regime Detection → Dynamic Structure
+     → Experts (trend / mean-reversion / breakout)
+     → Opportunity Filter (hard rules ⊕ ML)
+     → Router (which expert, right now?)
+     → Risk Layer (sizing, caps, circuit breakers)
+     → Execution (3 backends) → Feedback (journal, traces, drift)
 ```
 
 | Layer | Responsibility | Model |
 |---|---|---|
 | **Market Data** | Synchronized OHLCV + microstructure | Rule-based |
-| **Feature Engine** | Momentum, volatility, orderflow, liquidity features | Rule-based (config-driven periods) |
-| **Dynamic Structure** | Support/resistance zones with lifecycle tracking | Rule-based + LightGBM (zone validity) |
-| **Regime Detection** | Trending / Chop / Panic probability vector | HMM + LightGBM |
-| **Expert Layer** | Trend, Mean Reversion, Breakout signals | LightGBM (per expert) |
+| **Feature Engine** | Momentum, volatility, orderflow, liquidity | Rule-based (config-driven periods) |
+| **Dynamic Structure** | S/R zones with lifecycle + survival probability | Rule-based + LightGBM |
+| **Regime Detection** | Trending/chop/panic probability vector | Gaussian HMM + LightGBM distillation |
+| **Expert Layer** | 3 specialists, regime-gated candidates | LightGBM per expert |
 | **Opportunity Filter** | "Is there enough edge to trade?" | Hard rules + LightGBM |
 | **Router** | Which expert to trust right now | LightGBM |
-| **Risk Layer** | Position sizing, drawdown control, circuit breakers | Hard rules + LightGBM |
-| **Execution** | Order placement with slipage simulation | Rule-based |
-| **Feedback** | Trade journal, zone events, system state archive | — |
+| **Risk Layer** | Sizing, drawdown control, 5 circuit breakers | Hard rules + LightGBM |
+| **Execution** | `paper_sim` / `paper_live` / `live` (CCXT) | Rule-based fills |
+| **Feedback** | Trade journal, decision traces, PSI drift | — |
 
-## Key Features
+**Non-negotiable invariants** (pinned by tests): hard rules always veto
+ML; one concurrent position; persisted breakers; kill switch checked
+first; no look-ahead anywhere.
 
-**Implemented (Phases 1–5):**
+## Engineering Decisions
 
-- **Triple-barrier labeling** — TP/SL/timeout resolution for training data
-- **Dynamic structure engine** — pivot-based support/resistance zones with rejection/breakout classification and Beta-Bernoulli survival probability
-- **Regime detection** — 3-state Gaussian HMM with panic-spike override and LightGBM distillation classifier
-- **3 experts** — Trend, Mean Reversion, Breakout with regime-gated candidate selection
-- **Opportunity filter** — hard-rule veto (spread, depth, volatility, regime) with ML blend
-- **Router** — confidence-based expert selection with switching context tracking
-- **Risk layer** — invalidation-distance sizing, 5 circuit breakers (SQLite-persisted), manual kill switch
-- **3 execution backends** — `paper_sim`, `paper_live`, `live` (CCXT-based)
-- **Synthetic liquidity model** — feature-conditioned spread/depth proxy for backtesting
-- **Model registry** — SQLite-backed version lifecycle (pending → approved → superseded)
-- **Walk-forward training** — purge + embargo splits via `WalkForwardSplitter`
-- **Drift monitoring** — Population Stability Index (PSI) for feature distribution shifts
-- **Layered config** — `settings.base.yaml` + env overlays (`paper`/`live`)
-- **Decision tracing** — stage-by-stage bar traces with `diagnose.py` CLI
-- **Cross-layer consistency validation** — catches unit mismatches, dead breakers, threshold disagreements
-- **Regime-adaptive config** — unified `resolve_regime_param()` for all regime-dependent thresholds
-- **Hot-reload** — safe config paths reload without restart via `ConfigWatcher`
-- **Enforced limits** — `max_trades_per_hour`, `min_bars_between_orders`, `max_concurrent_positions` actually enforced
-- **Experiment log** — every backtest/training run logged to registry.db
-- **Live validation runbook** — scripted 5-step testnet procedure
-- **FeatureVector rename** — period-agnostic names (`momentum_short/medium/long`, `volatility_short/medium/long`)
-- **FeatureEngine config-driven** — periods read from `feature_engine.*` config block
-- **TUI signal console** — 6-view terminal dashboard (funnel, journal, performance vs targets, calibration, risk/faults, registry) with auto-refresh and a TTY-less `--once` renderer
+Documented as ADRs in [`docs/design-decisions/`](docs/design-decisions/README.md):
 
-**Planned (not yet implemented):**
+- [LightGBM over transformers](docs/design-decisions/adr-0001-lightgbm-over-transformer.md) for tabular decisions
+- [Walk-forward + purge + embargo](docs/design-decisions/adr-0002-walk-forward-validation.md) — never random splits ([leakage map](docs/leakage-prevention.md))
+- [Monolith on one laptop](docs/design-decisions/adr-0003-monolith-on-one-laptop.md) — measured: ~1 ms/bar decision latency, ~960 bars/sec
+- [Hard rules veto ML](docs/design-decisions/adr-0004-hard-rules-veto-ml.md)
+- [Rule-based execution first](docs/design-decisions/adr-0005-rule-based-execution-first.md); supervised router → bandit → (maybe) RL
+- [Frozen dataclass contracts](docs/design-decisions/adr-0006-frozen-dataclass-contracts.md) between all layers
 
-- Contextual bandit / PPO for adaptive router selection
-- TransformerEncoder for sequence-based market representation
-- Graph neural networks for zone lifecycle modeling
-- Multi-symbol support with partitioned storage
-- Real-time alerting (Telegram webhook wired, off by default)
+## Experiments
 
-## Tech Stack
-
-| Category | Tools |
-|---|---|
-| **Language** | Python 3.10+ |
-| **ML** | LightGBM, hmmlearn, scikit-learn |
-| **Data** | pandas, numpy, pyarrow |
-| **Exchange** | CCXT (Binance sandbox/live) |
-| **Backtesting** | vectorbt |
-| **Config** | PyYAML (layered settings) |
-| **Testing** | pytest |
-| **Serialization** | Parquet (Snappy), pickle (models) |
-
-## Local Setup
-
-### Prerequisites
-
-- Python 3.10 or later
-- pip or venv
-
-### Installation
+The benchmark harness (`scripts/full_stack_walk_forward_backtest.py`)
+pushes every bar through the **same code path as live trading** and
+reports realized, net-of-cost metrics against baselines and ablations:
 
 ```bash
-# Clone the repository
+make backtest           # real data: data/raw/BTCUSDT.csv
+make benchmark-smoke    # synthetic ablation ladder (no data needed)
+```
+
+**Baselines:** buy & hold · simple momentum · naive highest-confidence
+router · no-opportunity-filter.
+**Ablations:** `--single-expert <name>` · `--no-risk-layer` ·
+`--no-regime-gating`.
+
+| Metric | Baselines | Full system |
+|---|---|---|
+| Net return · Sharpe · Sortino | ✅ | ✅ |
+| Max drawdown · profit factor · win rate | ✅ | ✅ |
+| Expectancy/trade · turnover · fees+slippage | ✅ | ✅ |
+
+> **Results pending real-data run** — the harness, baselines, ablation
+> ladder, and calibration reports are complete; published tables will be
+> generated from real BTCUSDT history (see [`TODO.md`](TODO.md)). Every
+> number this repo shows is reproducible from a single command; nothing
+> is hand-written.
+
+**Calibration** (§5.3): expert candidates are triple-barrier-labeled
+independently of routing for reliability diagrams; router calibration
+compares executed-trade confidence vs realized win.
+
+## Explainability & Debugging
+
+Every bar produces a **decision trace** — the stage-by-stage verdict of
+the full pipeline:
+
+```bash
+python scripts/replay_trade.py --list            # browse trades
+python scripts/replay_trade.py --trade-id <id>   # T-30→T+30 full replay
+python scripts/diagnose.py --summary             # why didn't we trade?
+python scripts/dashboard.py                      # live TUI (6 views)
+python scripts/dashboard.py --once               # headless render
+```
+
+Example figures (`scripts/generate_figures.py`):
+
+| | |
+|---|---|
+| ![regime overlay](docs/images/regime_overlay.png) | ![router timeline](docs/images/router_timeline.png) |
+
+## Quick Start
+
+```bash
 git clone https://github.com/devansh1012007/Btc_trading_agents.git
 cd Btc_trading_agents
 
-# Create and activate a virtual environment
-python -m venv venv
-source venv/bin/activate   # Linux/macOS
-# venv\Scripts\activate    # Windows
+# Option A: Docker
+docker compose up          # historical replay, paper config
 
-# Install dependencies
-pip install -r requirements.txt
+# Option B: local
+make install-dev
+source .venv/bin/activate
+make check                 # lint + typecheck + full test suite
+python scripts/full_stack_walk_forward_backtest.py --synthetic 900 --relax-liquidity
 ```
 
-### Configuration
-
-The system uses layered YAML config:
-
-- `config/settings.base.yaml` — full configuration (all layers)
-- `config/settings.paper.yaml` — paper trading overlay (sandbox=true, paper_sim backend)
-- `config/settings.live.yaml` — live trading overlay (sandbox=false, live backend)
-
-Key config to review before running:
-
-| Setting | Location | Default | Notes |
-|---|---|---|---|
-| `system.data_granularity` | base.yaml | `"1m"` | Timeframe for all layers |
-| `labeling.fee_pct` | base.yaml | `0.04` | Binance taker fee |
-| `labeling.max_holding_bars` | base.yaml | `5` | Trade resolution window |
-| `execution.mode` | paper/live.yaml | `paper_sim` | Execution backend |
-| `execution.confirm_real_money` | paper/live.yaml | `false` | **Must be `true` for live orders** |
-| `feature_engine.momentum_periods` | base.yaml | `{short: 1, medium: 5, long: 10}` | Config-driven (Phase 5) |
-| `risk.circuit_breakers.max_trades_per_hour` | base.yaml | `10` | Enforced (Phase 5) |
-
-### Running
-
-```bash
-# Run the full test suite
-pytest tests/ -v
-
-# Pipeline dry-run (fetches 100 bars from Binance sandbox)
-python -m src.pipeline
-
-# Historical backtest through the full stack
-python scripts/run.py --mode historical --input data/raw/BTCUSDT.csv --env paper
-
-# Full-stack performance report vs Project_Plan.md targets
-python scripts/full_stack_walk_forward_backtest.py --input data/raw/BTCUSDT.csv --env paper
-
-# Live loop (requires real credentials + confirm_real_money=true)
-python scripts/run.py --mode live --env live
-
-# Diagnostics: summary of why bars didn't trade
-python scripts/diagnose.py --summary --since 2026-08-01
-
-# Diagnostics: full trace for a specific bar
-python scripts/diagnose.py --timestamp 1755900000
-
-# Pre-flight validation before starting a session
-python scripts/preflight.py --env paper
-
-# Config consistency validation
-python scripts/validate_config_consistency.py
-
-# TUI dashboard (live, 6 views, auto-refresh) / headless one-shot render
-python scripts/dashboard.py            # keys: 1-6 views · r refresh · q quit
-python scripts/dashboard.py --once
-```
-
-### Training Models
-
-```bash
-# Retrain all components (never auto-promotes)
-python scripts/retrain_all.py --input data/raw/BTCUSDT.csv --config config/settings.base.yaml
-
-# Promote a pending model after review
-python scripts/approve_model.py <component> <version_id>
-
-# Rollback to a previous version
-python scripts/rollback_model.py <component> <version_id>
-```
+Key config (`config/settings.{base,paper,live}.yaml`): `system.data_granularity`
+is the only timeframe switch; `execution.mode` selects the backend;
+**live orders require both `mode: "live"` and `confirm_real_money: true`**.
 
 ## Testing
 
+```
+tests/unit/         per-component + financial invariants + look-ahead guards
+tests/integration/  full-stack wiring through the real pipeline
+tests/e2e/          backtest entrypoint as subprocess, artifact checks
+```
+
 ```bash
-# All tests
-pytest tests/ -v
-
-# Single test file
-pytest tests/test_phase3.py -v
-
-# Single test
-pytest tests/test_phase3.py::test_triple_barrier_tp_hit_first -v
+pytest tests/ -v        # everything
+make unit && make integration && make e2e
+make coverage           # with coverage report
 ```
 
-No `conftest.py` — all fixtures are inline helper functions within each test file.
+Financial invariants (`tests/unit/test_invariants.py`): position caps,
+risk-only-shrinks, kill-switch/breaker blocking, rate limits, duplicate-
+order impossibility across restarts. Leakage guards
+(`tests/unit/test_no_lookahead.py`): features are a pure function of the
+past; embargo gaps enforced; labels see only their window.
 
-## Project Structure
+## Repository Layout
 
 ```
-src/
-  pipeline.py              ← TradingPipeline orchestrator
-  state/contracts.py       ← All shared dataclasses (frozen, single source of truth)
-  state/serialization.py   ← Dict/Parquet serialization for every dataclass
-  layers/                  ← Market data, features, regime, structure, experts,
-                             opportunity filter, router, risk layer
-  experts/                 ← Trend, Mean Reversion, Breakout experts
-  labeling/                ← Triple-barrier labeling for training data
-  backtest/                ← Full-stack replay, walk-forward splitter
-  execution/               ← Execution engine + paper_sim/paper_live/live backends
-  liquidity/               ← Synthetic liquidity model + real orderbook adapter
-  registry/                ← SQLite model registry (pending → approved → superseded)
-  feedback/                ← Trade journal, zone event log, system state archive
-  monitoring/              ← PSI drift monitor, performance monitor
-  connectors/              ← CCXT exchange connector
-  alerting/                ← Telegram notifier (off by default)
-  diagnostics/             ← Decision trace + fault log (Phase 5)
-  config/                  ← Regime-adaptive + hot-reload (Phase 5)
-config/
-  settings.base.yaml       ← Full configuration
-  settings.paper.yaml      ← Paper trading overlay
-  settings.live.yaml       ← Live trading overlay
-scripts/
-  run.py                   ← Main deployment entry (historical replay + live loop)
-  train_*.py               ← Per-component training scripts
-  retrain_all.py           ← Cron retraining (never auto-promotes)
-  approve_model.py         ← Manual model promotion
-  rollback_model.py        ← Restore previous model version
-  status.py                ← Health check
-  diagnose.py              ← CLI diagnostics (Phase 5)
-  validate_config_consistency.py ← Pre-flight validation (Phase 5)
-  preflight.py             ← Session pre-flight (Phase 5)
-  validate_live_backend.py ← Testnet validation runbook (Phase 5)
-tests/
-  test_phase1.py           ← Market data, feature engine
-  test_phase2.py           ← Structure engine + regime detection
-  test_phase3.py           ← Triple-barrier, experts, opportunity filter, router
-  test_phase4.py           ← Risk layer, execution, circuit breakers, registry
-  test_integration.py      ← Full-stack integration
-docs/
-  PHASE1_COMPLETE.md       ← Phase 1 implementation report
-  PHASE2_COMPLETE.md       ← Phase 2 implementation report
-  PHASE3_COMPLETE.md       ← Phase 3 implementation report
-  PHASE4_COMPLETE.md       ← Phase 4 implementation report
-  PHASE5_COMPLETE.md       ← Phase 5 implementation report
-data/                      ← Gitignored: raw/, processed/, models/, logs/
-  logs/decision_traces/    ← Partitioned JSONL traces (Phase 5)
-  faults.jsonl             ← System fault records (Phase 5)
+src/                       pipeline, state contracts, layers/, experts/,
+                           labeling/, backtest/, execution/, liquidity/,
+                           registry/, feedback/, monitoring/, diagnostics/,
+                           config/, connectors/, alerting/
+scripts/                   run.py (deploy), full_stack_walk_forward_backtest.py,
+                           benchmark_latency.py, replay_trade.py, generate_figures.py,
+                           train_*.py, retrain_all.py, approve/rollback_model.py,
+                           preflight.py, validate_config_consistency.py, dashboard.py
+config/                    settings.base.yaml + paper/live overlays
+tests/                     unit / integration / e2e
+docs/                      design-decisions/ (ADRs), explain/ (deep dives),
+                           leakage-prevention.md, research-report.md, limitations.md
+data/                      gitignored: raw/, models/, logs/, reports/, registry.db
 ```
+
+## Limitations
+
+Honest list in [`docs/limitations.md`](docs/limitations.md): non-stationarity,
+regime-shift lag, synthetic-liquidity fidelity, laptop-scale constraints,
+label bias in supervised routing, single-symbol/single-position scope.
+The system is explicitly **not** validated for live profitability yet —
+paper-trading statistics are a prerequisite (tracked in `TODO.md`).
 
 ## Roadmap
 
-### Phase 1 — Market Data & Features (Done)
-OHLCV ingestion via CCXT, feature engineering (momentum, volatility, RSI, MACD, orderflow, liquidity).
-
-### Phase 2 — Perception Layer (Done)
-Dynamic structure engine (pivot-based zones, survival probability) + regime detection (HMM + LightGBM).
-
-### Phase 3 — Decision Layer (Done)
-Triple-barrier labeling, expert layer (3 experts), opportunity filter (hard rules + ML), router (expert selection).
-
-### Phase 4 — Risk, Execution, Feedback (Done)
-Risk layer with circuit breakers, 3 execution backends, synthetic liquidity, model registry, drift monitoring, layered config.
-
-### Phase 5 — Diagnostics, Adaptive Config & Performance Intelligence (Done)
-Decision tracing, cross-layer consistency validation, regime-adaptive config, hot-reload, enforced rate limits, experiment log, live validation runbook, real `run_live_loop()`, FeatureVector field rename, FeatureEngine config-driven.
-
-### Future
-- Contextual bandit / PPO router (adaptive expert selection)
-- TransformerEncoder for sequence-based features
-- Graph neural networks for zone lifecycle
-- Multi-symbol support
-- Real-time alerting (Telegram)
-- Intigrating web jooks for live trading as soon as profitabiliy is atchived
+- [x] Phases 1–5: perception, decision, risk/execution, diagnostics (see `docs/PHASE*_COMPLETE.md`)
+- [ ] Real-data benchmark + ablation publication (`TODO.md`)
+- [ ] Multi-week paper-trading campaign → failure-analysis report
+- [ ] Contextual bandit router (then PPO only if bandits are beaten)
+- [ ] Sequence model behind the existing expert contracts
+- [ ] Multi-symbol partitioned storage
 
 ## Disclaimer
 
-This is a research/trading system. It does not guarantee profitability. Trading cryptocurrency involves substantial risk of loss. The models in this repository are trained on historical data and may not perform well in live markets. Use at your own risk. Never deploy capital you cannot afford to lose.
+Research software. No profitability guarantee. Crypto trading involves
+substantial risk of loss; models are trained on historical data and may
+fail in live markets. Never deploy capital you cannot afford to lose.
+Live mode requires explicit double confirmation and is guarded by a
+kill switch (`data/control/EMERGENCY_STOP`) plus persisted circuit breakers.
+
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) — conventional commits,
+`make check` before any PR, and the hard rules (pipeline order, no
+look-ahead, no auto-promotion) are enforced in review and CI.

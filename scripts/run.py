@@ -58,6 +58,7 @@ from src.layers.risk_layer import RiskLayer, RiskStateStore
 from src.pipeline import TradingPipeline
 from src.state.contracts import ExpertAction, SystemState
 from src.utils.config_helpers import load_layered_config
+from src.utils.logging_setup import decision_record_from_state, log_trade_decision, setup_logging
 
 GRANULARITY_SECONDS = {"10s": 10, "30s": 30, "1m": 60, "5m": 300}
 
@@ -150,7 +151,9 @@ def run_historical(pipeline: TradingPipeline, risk_layer: RiskLayer, execution_e
 
     for snapshot in snapshots:
         # Manual kill switch + heartbeat -- checked every bar, first thing.
+        t0 = time.perf_counter()
         state = pipeline.run_live_bar(snapshot)
+        decision_latency_ms = (time.perf_counter() - t0) * 1000
         if state is None:
             continue
         risk_layer.store.heartbeat()
@@ -243,7 +246,11 @@ def run_historical(pipeline: TradingPipeline, risk_layer: RiskLayer, execution_e
         trace_writer.append(DecisionTrace(
             timestamp=state.timestamp, symbol=state.symbol,
             stages=stages, terminal_stage=terminal_stage, terminal_reason=terminal_reason,
+            total_duration_ms=decision_latency_ms,
+            stage_timings_ms=pipeline.last_bar_timings,
         ))
+        log_trade_decision({**decision_record_from_state(state),
+                            "terminal_stage": terminal_stage, "terminal_reason": terminal_reason})
 
         realized_pnl_this_bar = 0.0
 
@@ -404,7 +411,9 @@ def run_live_loop(pipeline: TradingPipeline, risk_layer: RiskLayer, execution_en
             snapshot = snapshots[0]
 
             # Run through pipeline
+            t0 = time.perf_counter()
             state = pipeline.run_live_bar(snapshot)
+            decision_latency_ms = (time.perf_counter() - t0) * 1000
             if state is None:
                 time.sleep(poll_seconds)
                 continue
@@ -500,7 +509,11 @@ def run_live_loop(pipeline: TradingPipeline, risk_layer: RiskLayer, execution_en
             trace_writer.append(DecisionTrace(
                 timestamp=state.timestamp, symbol=state.symbol,
                 stages=stages, terminal_stage=terminal_stage, terminal_reason=terminal_reason,
+                total_duration_ms=decision_latency_ms,
+                stage_timings_ms=pipeline.last_bar_timings,
             ))
+            log_trade_decision({**decision_record_from_state(state),
+                                "terminal_stage": terminal_stage, "terminal_reason": terminal_reason})
 
             realized_pnl_this_bar = 0.0
 
@@ -604,6 +617,7 @@ def main():
     parser.add_argument("--initial-equity", type=float, default=10000.0)
     args = parser.parse_args()
 
+    setup_logging()
     config = load_layered_config(args.env)
     symbol = args.symbol or config.get("system", {}).get("symbol", "BTC/USDT")
 

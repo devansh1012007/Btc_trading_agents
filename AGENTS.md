@@ -30,7 +30,12 @@ config/
 scripts/
   run.py                   ← deployment entry (historical replay + live loop)
   full_stack_walk_forward_backtest.py ← M5.2: realized-metrics backtest vs Project_Plan.md
-                                           targets, 4 baselines, calibration, reports+experiment log
+                                           targets, 4 baselines, calibration, reports+experiment log.
+                                           Ablation toggles: --single-expert, --no-risk-layer, --no-regime-gating
+  benchmark_latency.py     ← decision-latency/memory benchmark (avg/p95/RAM, synthetic)
+  replay_trade.py          ← §10 trade replay: --list / --trade-id, journal+traces+OHLCV
+  generate_figures.py      ← docs/images figures from a real run (matplotlib, Agg)
+  demo_app.py              ← Streamlit decision demo (offline synthetic by default)
   train_*.py               ← per-component training
   retrain_all.py           ← cron retraining (never auto-promotes)
   approve_model.py         ← manual promotion in model registry
@@ -43,16 +48,40 @@ scripts/
   validate_live_backend.py ← scripted testnet validation runbook (Phase 5)
   dashboard.py             ← TUI signal console: 6 views over traces/journal/
                              reports/registry; --once for TTY-less render (M5.10)
+  verify_phase1.py,
+  verify_integration_phase{2,3,4}.py ← legacy manual verification scripts (not pytest)
 tests/
-  test_phase1.py           ← Market data, feature engine
-  test_phase2.py           ← Structure engine + regime detection
-  test_phase3.py           ← Triple-barrier, experts, opportunity filter, router
-  test_phase4.py           ← Risk layer, execution, circuit breakers, registry
-  test_integration.py      ← Full-stack integration
+  unit/                    ← per-component tests
+    test_phase1.py         ← Market data, feature engine
+    test_phase2.py         ← Structure engine + regime detection
+    test_phase3.py         ← Triple-barrier, experts, opportunity filter, router
+    test_phase4.py         ← Risk layer, execution, circuit breakers, registry
+    test_phase5.py         ← Reporting metrics, tracing, config validation
+    test_invariants.py     ← Financial invariants (position caps, breakers,
+                              duplicate-order prevention) — extend when
+                              adding risk controls
+  integration/             ← cross-layer wiring through the real pipeline
+    test_integration.py    ← Full-stack integration
+  e2e/
+    test_backtest_smoke.py ← Backtest entrypoint as a subprocess; report artifacts
 data/                      ← gitignored: raw/, processed/, models/, logs/
-  logs/decision_traces/    ← partitioned JSONL traces (Phase 5)
+  logs/decision_traces/    ← partitioned JSONL traces (Phase 5; per-stage
+                              duration_ms + total_duration_ms latency fields)
+  logs/decisions.jsonl     ← one structured record per bar (regime/expert/
+                              opportunity/router/risk/decision — §8 feed)
+  logs/system.jsonl        ← all log output as JSON lines
   faults.jsonl             ← system fault records (Phase 5)
 ```
+
+## Packaging & tooling
+
+- `pyproject.toml` — installable (`pip install -e ".[dev]"`); deps mirror
+  requirements.txt (keep in sync; Docker installs from requirements.txt).
+- Extras: `dev` (ruff, mypy, pytest-cov), `demo` (streamlit, matplotlib).
+- CI: `.github/workflows/ci.yml` — ruff → mypy (strict modules + global
+  lenient) → pytest with coverage. `make check` runs the same locally.
+- mypy: `src/state` + `src/reporting` are strict (`disallow_untyped_defs`);
+  everything else lenient — new modules should be fully annotated.
 
 ## Running
 
@@ -60,11 +89,20 @@ data/                      ← gitignored: raw/, processed/, models/, logs/
 # Tests
 pytest tests/ -v
 
+# By tier
+make unit          # tests/unit/
+make integration   # tests/integration/
+make e2e           # tests/e2e/
+
+# Lint + typecheck (also run by CI)
+make lint          # ruff over src/ scripts/ tests/
+make typecheck     # mypy on strict modules (src/state, src/reporting)
+
 # Single test file
-pytest tests/test_phase3.py -v
+pytest tests/unit/test_phase3.py -v
 
 # Single test
-pytest tests/test_phase3.py::test_triple_barrier_tp_hit_first -v
+pytest tests/unit/test_phase3.py::test_triple_barrier_tp_hit_first -v
 
 # Pipeline dry-run (fetches 100 bars from Binance sandbox)
 python -m src.pipeline
@@ -94,6 +132,23 @@ python scripts/validate_config_consistency.py
 # TUI dashboard (live, 6 views, auto-refresh) / headless one-shot render
 python scripts/dashboard.py            # keys: 1-6 views · r refresh · q quit
 python scripts/dashboard.py --once
+
+# Trade replay: list recent trades / full stage-by-stage replay of one trade
+python scripts/replay_trade.py --list 10
+python scripts/replay_trade.py --trade-id <id>
+
+# Latency/memory benchmark (synthetic, deterministic)
+python scripts/benchmark_latency.py --synthetic 300   # or: make latency
+
+# Figures for docs/images (labeled ILLUSTRATIVE on synthetic data)
+python scripts/generate_figures.py --synthetic 900 --relax-liquidity
+
+# Streamlit decision demo (offline synthetic by default)
+streamlit run scripts/demo_app.py    # or: make demo
+
+# Ablation ladder (contribution of each component)
+python scripts/full_stack_walk_forward_backtest.py --synthetic 900 --relax-liquidity \
+    --single-expert trend_expert     # also: --no-risk-layer, --no-regime-gating
 ```
 
 ## Config system (easy to get wrong)
@@ -188,3 +243,34 @@ Phase 5 closed all Phase 4 gaps and added diagnostics, adaptive config, and perf
 - **run_live_loop()**: real implementation (replaced stub)
 - **FeatureVector rename**: period-agnostic names (`momentum_short/medium/long`, `volatility_short/medium/long`)
 - **FeatureEngine config-driven**: periods read from `feature_engine.*` config block
+
+## Presentation-hardening additions (post-Phase 5)
+
+Engineering-visibility pass per docs/PRESENTATION.md — infrastructure only,
+no trading-behavior change:
+
+- **Packaging**: `pyproject.toml` (deps mirror requirements.txt), Makefile
+  (`make check` = lint+typecheck+tests), CONTRIBUTING.md, GitHub Actions CI.
+- **Tests reorganized**: `tests/{unit,integration,e2e}/`; new
+  `test_invariants.py` (financial invariants — extend when adding risk
+  controls) and `test_no_lookahead.py` (leakage guards).
+- **Structured logging**: `src/utils/logging_setup.py` — `setup_logging()`
+  writes `data/logs/system.jsonl` (JSON lines); `log_trade_decision()`
+  appends the §8-shaped per-bar record to `data/logs/decisions.jsonl`.
+  Wired in scripts/run.py (both loops).
+- **Latency instrumentation**: `TradingPipeline.last_bar_timings` per stage;
+  `DecisionTrace.total_duration_ms` + `stage_timings_ms`;
+  `StageResult.duration_ms`. Benchmark: `make latency`.
+- **Trade replay**: `scripts/replay_trade.py --list / --trade-id` stitches
+  journal + decision traces + OHLCV into a T±window stage-by-stage replay.
+- **Ablation ladder**: `full_stack_walk_forward_backtest.py --single-expert
+  <name> / --no-risk-layer / --no-regime-gating`; turnover metric
+  (`turnover_x`) added to every finalize() block.
+- **Paper-sim realism knobs** (default OFF, deterministic):
+  `execution.simulated_latency_ms` (+ `latency_adverse_pct_per_100ms`) and
+  `execution.order_rejection_rate`.
+- **Docs**: ADRs in `docs/design-decisions/`, `docs/leakage-prevention.md`,
+  `docs/limitations.md`, `docs/research-report.md` (results pending real
+  data), figures via `scripts/generate_figures.py` → `docs/images/`,
+  Streamlit demo `scripts/demo_app.py` (`make demo`).
+- **Deferred real-data work**: tracked in root `TODO.md`.

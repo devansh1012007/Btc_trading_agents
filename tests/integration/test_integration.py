@@ -26,7 +26,7 @@ from src.layers.market_data import MarketDataLayer
 from src.state.contracts import SystemState
 from src.state.serialization import system_state_to_dict
 
-CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "settings.base.yaml"
+CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "config" / "settings.base.yaml"
 
 
 def generate_mock_ohlcv(n_bars: int = 100, start_price: float = 50000) -> pd.DataFrame:

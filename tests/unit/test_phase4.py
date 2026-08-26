@@ -382,8 +382,8 @@ def test_realized_pnl_populated_on_no_trade_bars():
 # --------------------------------------------------------------------
 
 def test_zone_event_log_covers_full_lifecycle():
-    from tests.test_phase2 import _build_pivot_high
-    from tests.test_phase2 import make_snapshot as make_market_snapshot
+    from tests.unit.test_phase2 import _build_pivot_high
+    from tests.unit.test_phase2 import make_snapshot as make_market_snapshot
 
     engine = DynamicStructureEngine(lookback_bars=50, pivot_window=3, zone_decay_bars=3)
     t, _ = _build_pivot_high(engine)

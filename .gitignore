@@ -56,3 +56,4 @@ logs/
 *.env
 wheelhouse-BTC/
 wheelhouse4BTC/
+docs/images/

@@ -155,6 +155,15 @@ A rejected `RiskDecision` produces `None` regardless of backend.
 
 Pure historical/backtest simulation. Liquidity from snapshot's synthetic liquidity model (set by `attach_synthetic_liquidity()`). No network calls.
 
+**Realism knobs** (all default OFF; deterministic — no RNG):
+
+| Config key | Effect |
+|---|---|
+| `execution.simulated_latency_ms` | Shifts `fill_timestamp` forward; adverse-fill adjustment of `latency_adverse_pct_per_100ms` % per 100 ms latency (BUY pays up, SELL sells down) |
+| `execution.order_rejection_rate` | Rejects orders at the configured rate via a deterministic SHA-256 hash roll over `timestamp|symbol|side` — reproducible across runs |
+
+Both exist to stress-test cost sensitivity and breaker paths without changing default backtest behavior.
+
 ### PaperLive (`src/execution/backends/paper_live_backend.py`)
 
 Real order book for liquidity (via `fetch_real_liquidity()`), but simulated fills. Meaningfully better validation before touching real capital. Falls back to snapshot's liquidity on network failure.
@@ -272,6 +281,7 @@ class StageResult:
     passed: bool
     detail: str              # human-readable: "momentum 0.03% below threshold 0.05%"
     values: Dict[str, float] # actual numbers, for reproducibility
+    duration_ms: Optional[float] = None  # wall-clock stage latency (PRESENTATION §23)
 
 @dataclass(frozen=True)
 class DecisionTrace:
@@ -280,6 +290,8 @@ class DecisionTrace:
     stages: List[StageResult]     # every stage the bar passed through, in order
     terminal_stage: str            # where the journey ended
     terminal_reason: str
+    total_duration_ms: Optional[float] = None            # end-to-end decision latency
+    stage_timings_ms: Optional[Dict[str, float]] = None   # pipeline-internal per-stage latencies
 ```
 
 Written to `data/logs/decision_traces/` as partitioned JSONL. Query with:
@@ -287,4 +299,5 @@ Written to `data/logs/decision_traces/` as partitioned JSONL. Query with:
 ```bash
 python scripts/diagnose.py --timestamp 1755900000
 python scripts/diagnose.py --summary --since 2026-08-01
+python scripts/replay_trade.py --trade-id <id>   # full T±window trade replay
 ```
