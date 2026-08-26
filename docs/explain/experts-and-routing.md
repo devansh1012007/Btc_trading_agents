@@ -80,9 +80,9 @@ All must pass:
 - Volume surge: `volume_zscore` ≥ `volume_zscore_surge_threshold` (1.0)
 - Orderflow agreement: `orderflow_momentum` ≥ `orderflow_momentum_threshold` (10)
 
-### Features (4)
+### Features (5)
 
-`volatility_medium`, `volatility_long`, `volume_zscore`, `orderflow_momentum`
+`volatility_medium`, `volatility_long`, `volume_zscore`, `orderflow_momentum`, `regime_confidence`
 
 ### Training Data
 
@@ -103,10 +103,12 @@ Centralized construction from config. All experts receive `data_granularity` at 
 ### Decision Flow
 
 ```
-1. If all experts are NO_TRADE → select "no_trade"
-2. If ML model available: blend model probs with expert confidence
-3. If no model or model says no_trade: highest-confidence expert above floor
-4. Track bars_since_switch for switching context
+1. If opportunity filter rejected → "no_trade" (reasoning="opportunity_filter_rejected")
+2. If ML model available: blend model probs with normalized expert confidence
+3. If no model, model inference error, or blended winner is no_trade/below floor:
+   highest-confidence expert above confidence_floor_to_trade
+4. Track bars_since_switch for switching context (no_trade resets nothing —
+   it clears the current expert so re-entering the same expert counts as a switch)
 ```
 
 ### Model Training (`scripts/train_router.py`)

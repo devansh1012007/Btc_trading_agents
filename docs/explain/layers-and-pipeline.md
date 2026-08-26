@@ -76,7 +76,7 @@ Configurable via `models.regime_serving_source`: `"auto"` | `"hmm_filter"` | `"l
 
 **Pivot-based**: Local highs/lows confirmed by `pivot_window` (default 5) bars on each side. `confirmed_at_bar` is an engine-side shadow dict (not a `Zone` field) to avoid `contracts.py` schema changes.
 
-**Volume-based**: High-volume bars also generate zones.
+**Volume-based**: High-volume bars (>1.5× the 20-bar average volume, last 10 bars) also generate zones. Quirk: zone_type is assigned by bar-index parity (`"support" if i % 2 == 0 else "resistance"`) since OHLCV alone can't tell bounce direction — these zones are best treated as "high-volume interest areas"; their type is only meaningful after price-action interaction updates their stats.
 
 ### Price-Action Interaction
 
@@ -94,7 +94,7 @@ The ML blend is controlled by `zone_survival_blend_weight` (default 0.0 — rule
 
 ### Zone Lifecycle Events
 
-Every zone transition is logged: `created`, `touched`, `rejected`, `broke`, `merged`, `decayed`. These are flushed to `data/logs/zone_events.parquet` by `flush_zone_events()`.
+Every zone transition is logged into `structure_engine.lifecycle_events`: `created`, `rejected`, `broke`, `merged`, `decayed` (note: plain touches aren't logged as their own event; rejection/breakout cover them). This log is a superset of the older `touch_events` list (which only captures rejection/breakout outcomes and keeps its `"rejection"/"breakout"` naming for backward compatibility). The lifecycle log is flushed to `data/logs/zone_events.parquet` by `flush_zone_events()` at the end of a run.
 
 ### Decay & Merging
 
@@ -208,6 +208,8 @@ Two rate limits enforced in `evaluate()`:
 | `min_bars_between_orders` | Minimum bar gap | Rejects if bars since last order < limit |
 
 Both read from `breaker_cfg` in config. `risk_layer.record_trade(timestamp)` is called after successful execution.
+
+**Config-visibility quirk**: `RiskLayer` receives only the `risk:` block, so `execution.min_bars_between_orders` (in `settings.base.yaml`) is **invisible to it** — the layer falls back to `breaker_cfg.get("min_bars_between_orders", 2)`, i.e. the hardcoded default 2, which happens to equal the configured value. Moving that key under `risk.circuit_breakers` (or threading the full config) is required for the setting to actually take effect.
 
 ### Important: Never Called for Exits
 

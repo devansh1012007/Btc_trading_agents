@@ -4,7 +4,12 @@
 
 ### Design
 
-Optional, off by default. Telegram backend. Never crashes the caller — errors are logged and the function returns `False`.
+Optional, off by default. Telegram backend (the only one implemented; the `Notifier` interface is generic enough for others). Never crashes the caller — errors are logged and the function returns `False`.
+
+> **Status: built, not wired.** Nothing constructs a `Notifier` yet —
+> circuit breakers, the approval queue, and execution-error paths do not
+> emit events today. Enabling it later is "construct with the `alerting`
+> config block + call `notify()`", not a refactor.
 
 ### Configuration
 
@@ -17,45 +22,36 @@ alerting:
   notify_on: [circuit_breaker_tripped, pending_model_approval, execution_error, daily_summary]
 ```
 
-### Event Types
+### Implementation
 
-| Event | Triggered By |
+```python
+class Notifier:
+    def __init__(self, config): ...          # reads enabled/backend/notify_on/env-var names
+    def notify(self, event_type, message) -> bool:
+        if not self.enabled: return False
+        if self.notify_on and event_type not in self.notify_on: return False
+        # urllib POST to api.telegram.org/bot<token>/sendMessage, timeout=10s
+```
+
+Credentials come from the two environment variables named in config; missing vars → warning, drop, return `False`.
+
+### Event Types (intended)
+
+| Event | To Be Triggered By |
 |---|---|
 | `circuit_breaker_tripped` | RiskLayer circuit breaker activation |
 | `pending_model_approval` | `retrain_all.py` registers a pending model |
 | `execution_error` | Execution backend failure |
 | `daily_summary` | End-of-day trade summary |
 
-### Implementation
-
-```python
-def notify(event_type: str, message: str) -> bool:
-    if not config.get("enabled"):
-        return False
-    
-    bot_token = os.environ.get(config["telegram_bot_token_env_var"])
-    chat_id = os.environ.get(config["telegram_chat_id_env_var"])
-    
-    if not bot_token or not chat_id:
-        logger.warning(f"Alerting configured but env vars missing for {event_type}")
-        return False
-    
-    try:
-        # Send Telegram message
-        return True
-    except Exception as e:
-        logger.error(f"Alert failed for {event_type}: {e}")
-        return False
-```
-
 ### Failure Modes
 
 | Failure | Behavior |
 |---|---|
-| `alerting.enabled: false` | Returns False immediately |
+| `alerting.enabled: false` | Returns False immediately (debug-logged) |
+| `event_type` not in `notify_on` (when non-empty) | Returns False silently |
 | Missing env vars | Logs warning, returns False |
-| Telegram API failure | Logs error, returns False |
-| Network timeout | Exception caught, logged, returns False |
+| Telegram API failure / network timeout | Exception caught, logged, returns False |
 
 **Never crashes the caller** — this is critical. An alerting failure must never take down the trading system.
 
@@ -71,6 +67,10 @@ self.exchange = ccxt.binance({
     'sandbox': sandbox,
 })
 ```
+
+### CCXT Connector Exception Policy
+
+`fetch_ohlcv` / `fetch_ticker` / `fetch_funding_rate` log any exception and **re-raise** — nothing is swallowed, so programming errors surface immediately and the caller decides retry policy. `fetch_funding_rate` is the one soft spot: it returns `None` on failure instead of raising (best-effort exotic data).
 
 ### Local Data Caching
 
@@ -145,11 +145,12 @@ Each bar goes through:
 1. Feature computation (rolling buffer operations)
 2. Regime detection (HMM filter or LightGBM inference)
 3. Structure computation (zone touch detection, survival probability)
-4. Expert evaluation (3× LightGBM inference or fallback)
-5. Opportunity filter (rule evaluation + optional LightGBM)
-6. Router decision (optional LightGBM + fallback)
+4. Liquidity attachment (pure arithmetic)
+5. Expert evaluation (3× LightGBM inference or fallback)
+6. Opportunity filter (rule evaluation + optional LightGBM)
+7. Router decision (optional LightGBM + fallback)
 
-All operations are in-memory. No I/O during bar processing. Latency is dominated by ML inference (LightGBM is fast — histogram-based, typically < 1ms per prediction).
+All operations are in-memory. No I/O during bar processing. Latency is dominated by ML inference (LightGBM is fast — histogram-based, typically < 1 ms per prediction). Measure it rather than trust claims: `scripts/benchmark_latency.py` (`make latency`) reports mean/p50/p95/max per stage plus peak RSS (once the missing latency instrumentation is restored — see failures doc).
 
 ### Live Loop Timing
 

@@ -21,7 +21,7 @@ stop_loss_pct = k_sl × volatility_pct
 
 ### `barrier_volatility_pct()`
 
-Uses `volatility_medium` (a genuinely multi-sample, well-defined dispersion statistic) instead of `volatility_short` which is always 0.0 (std of single-element array). Applied at all six call sites (every training script, the backtest harness, and the shared replay helper) so there's one place this decision lives.
+Uses `volatility_medium` (a genuinely multi-sample, well-defined dispersion statistic) instead of `volatility_short` which is always 0.0 at default config (std of single-element array). Applied at every barrier-sizing call site (all training scripts, both `run.py` loops, the backtest harness, the shared replay helper) so there's one place this decision lives.
 
 ### `TripleBarrierOutcome`
 
@@ -37,14 +37,12 @@ Uses `volatility_medium` (a genuinely multi-sample, well-defined dispersion stat
 ### Regime Models (`scripts/train_regime_models.py`)
 
 **Step 1: HMM Fit**
-- Grid search over n_states (2–7) using BIC
-- Final model fitted with n_states=3 (per config)
-- Gaussian emissions, full covariance
+- Diagnostic BIC grid over n_states = [2, 3, 4, 5] (logged only)
+- Final model fitted with n_states=3 (per config), Gaussian emissions, full covariance
 
 **Step 2: State Labeling**
-- Offline smoothed HMM labels → map states to regime names
-- Mapping: {2: 'trending_up', 0: 'trending_down', 1: 'chop_range'} (example — depends on BIC winner)
-- Panic override applied post-hoc
+- Offline smoothed HMM labels → map states to regime names by ordering hidden states on mean momentum (highest → trending_up, lowest → trending_down; lowest-volatility remainder → chop_range)
+- Panic override applied post-hoc (`panic_score >= 0.5` relabels the bar `panic_spike`)
 
 **Step 3: LightGBM Distillation**
 - Train classifier on smoothed offline labels
@@ -88,12 +86,13 @@ Uses `volatility_medium` (a genuinely multi-sample, well-defined dispersion stat
 
 ### Opportunity Filter (`scripts/train_opportunity_filter.py`)
 
-**Label**: "best expert proxy" — for each bar, which expert's triple-barrier return was highest? If all ≤ 0, label is 0 (not tradable).
+**Label**: "best expert proxy" — for each bar, the maximum net triple-barrier return across all proposing experts. If no expert proposed or the best return ≤ 0, label is 0 (not tradable).
 
-**Features**: `build_features()` extracts 8 features from expert_outputs, regime_state, zone_map, market, fv:
-- `edge_vs_fees`, `spread_pct`, `depth_usdt`, `volatility_medium`, `best_confidence`, `expert_disagreement`, `regime_confidence`, `is_panic`
+**Features**: `build_features()` extracts exactly 8 features (`src/layers/opportunity_filter.py::FEATURE_NAMES`):
+- `best_confidence`, `mean_no_trade_probability`, `edge_vs_fees`, `spread_pct`, `volatility_medium`, `regime_confidence`, `regime_persistence_score`, `zone_num_active`
 
 **Model**: LightGBM binary classifier. Blend weight: 0.3 (30% model, 70% hard rules).
+**Payload caveat**: this script's pickle omits the `granularity` key, so the granularity guard can never trigger for it (only `feature_version` applies) — see [failures-and-fallbacks.md](failures-and-fallbacks.md).
 
 ### Router (`scripts/train_router.py`)
 
@@ -102,6 +101,7 @@ Uses `volatility_medium` (a genuinely multi-sample, well-defined dispersion stat
 **Features**: `build_features()` from router.py — expert confidences, regime probs, opportunity score, `bars_since_switch`, `current_expert`.
 
 **Model**: LightGBM multiclass (4 classes). Blend weight: 0.2 (20% model, 80% expert confidence).
+**Payload caveat**: like the opportunity filter, this pickle omits the `granularity` key — the granularity guard is inert for it.
 
 ### Risk Model (`scripts/train_risk_model.py`)
 
@@ -113,32 +113,33 @@ Uses `volatility_medium` (a genuinely multi-sample, well-defined dispersion stat
 
 ## Walk-Forward Cross-Validation
 
-All training scripts use `WalkForwardSplitter` with parameters from `backtest:` config block:
+All training scripts use `WalkForwardSplitter` with parameters from the `backtest:` config block, **clamped to the dataset** (`min(cfg, len(df)//2)` for train, `len(df)//4` for test/step) so small datasets still produce at least one fold; with zero folds they warn and fit on all data without CV.
 
-| Parameter | Default | Meaning |
-|---|---|---|
-| `train_bars` | 5000 | Training window size |
-| `test_bars` | 500 | Test window size |
-| `step_bars` | 100 | Sliding window step |
-| `embargo_bars` | 50 | Purge gap after test set |
+| Parameter | `settings.base.yaml` | Legacy `settings.yaml` | Meaning |
+|---|---|---|---|
+| `train_bars` | 5,000,000 (effectively "all data") | 5000 | Training window size |
+| `test_bars` | 5000 | 500 | Test window size |
+| `step_bars` | 1000 | 100 | Sliding window step |
+| `embargo_bars` | 50 | 50 | Purge gap between train end and test start |
 
 The embargo prevents label leakage: a label whose outcome window extends into the test set doesn't contaminate training data in the next fold.
 
 ## Model Cards
 
-Every trained model has a `.meta.json` companion:
+Every trained model writes a `.meta.json` companion next to the pickle (the pickle payload itself carries `model`, `feature_names`, `granularity` where implemented, and `feature_version`):
 
 ```json
 {
   "trained_at": "2025-01-01T00:00:00+00:00",
+  "granularity": "1m",
   "n_samples": 1234,
-  "label_distribution": {"trend_expert": 500, "no_trade": 734},
-  "feature_names": ["momentum_medium", ...],
-  "feature_version": "v2_renamed",
-  "walk_forward_folds": [{"fold": 0, "n_train": 5000, "n_test": 500, "accuracy": 0.72, "auc": 0.68}, ...],
-  "granularity": "1m"
+  "label_distribution": {"trending_up": 500, ...},
+  "feature_names": ["momentum_medium", "..."],
+  "walk_forward_folds": [{"fold": 0, "n_train": 5000, "n_test": 500, "accuracy": 0.72, "auc": 0.68}]
 }
 ```
+
+Note: `feature_version: "v2_renamed"` lives inside the pickle payload (where loaders check it), not in the meta card.
 
 ## Retraining Flow (`scripts/retrain_all.py`)
 

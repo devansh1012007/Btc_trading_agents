@@ -160,9 +160,15 @@ Pure historical/backtest simulation. Liquidity from snapshot's synthetic liquidi
 | Config key | Effect |
 |---|---|
 | `execution.simulated_latency_ms` | Shifts `fill_timestamp` forward; adverse-fill adjustment of `latency_adverse_pct_per_100ms` % per 100 ms latency (BUY pays up, SELL sells down) |
-| `execution.order_rejection_rate` | Rejects orders at the configured rate via a deterministic SHA-256 hash roll over `timestamp|symbol|side` — reproducible across runs |
+| `execution.order_rejection_rate` | Rejects orders at the configured rate via a deterministic SHA-256 hash roll over `timestamp\|symbol\|side` — reproducible across runs |
 
 Both exist to stress-test cost sensitivity and breaker paths without changing default backtest behavior.
+
+> **HEAD caveat**: these knobs are **not in canonical `src/` yet** — the
+> implementation lives only in the newer `tests/src/execution/backends/`
+> mirror copy, and `tests/unit/test_paper_sim_realism.py` fails against
+> `src/` until it's restored. See "Source-Tree Regression" in
+> [failures-and-fallbacks.md](failures-and-fallbacks.md).
 
 ### PaperLive (`src/execution/backends/paper_live_backend.py`)
 
@@ -272,32 +278,17 @@ for snapshot in snapshots:
 
 ## Decision Tracing (Phase 5)
 
-Every bar produces a `DecisionTrace` with `StageResult` per stage:
-
-```python
-@dataclass(frozen=True)
-class StageResult:
-    stage_name: str          # "trend_expert_gate", "opportunity_filter", "router", "risk_layer"
-    passed: bool
-    detail: str              # human-readable: "momentum 0.03% below threshold 0.05%"
-    values: Dict[str, float] # actual numbers, for reproducibility
-    duration_ms: Optional[float] = None  # wall-clock stage latency (PRESENTATION §23)
-
-@dataclass(frozen=True)
-class DecisionTrace:
-    timestamp: int
-    symbol: str
-    stages: List[StageResult]     # every stage the bar passed through, in order
-    terminal_stage: str            # where the journey ended
-    terminal_reason: str
-    total_duration_ms: Optional[float] = None            # end-to-end decision latency
-    stage_timings_ms: Optional[Dict[str, float]] = None   # pipeline-internal per-stage latencies
-```
-
-Written to `data/logs/decision_traces/` as partitioned JSONL. Query with:
+Every bar produces a `DecisionTrace` with `StageResult` per stage (see
+[states-and-contracts.md](states-and-contracts.md) for the exact shapes and
+the HEAD caveat on the latency fields). Written to
+`data/logs/decision_traces/` as partitioned JSONL. Query with:
 
 ```bash
 python scripts/diagnose.py --timestamp 1755900000
 python scripts/diagnose.py --summary --since 2026-08-01
 python scripts/replay_trade.py --trade-id <id>   # full T±window trade replay
 ```
+
+## PaperLive Sample Logging
+
+`PaperLiveBackend` accepts `sample_log_path`; when a `FeatureVector` is supplied to `place_order()` it buffers paired `(synthetic, real)` liquidity samples and writes them via `flush_samples()` to Parquet — the dataset `calibrate_synthetic_liquidity.py` fits against. Note: as shipped, neither `run.py` loop passes `fv=`/constructs the backend with a `sample_log_path`, so sample logging activates only if wired at construction.

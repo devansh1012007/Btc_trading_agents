@@ -71,7 +71,10 @@ Full configuration. All config blocks:
 | `alerting` | enabled, backend, telegram env vars, notify_on |
 | `storage` | registry_db, system_state_archive, zone_events |
 | `logging` | level, format |
-| `config_management` | hot_reload safe/excluded paths |
+
+(There is **no** `config_management` block in the shipped YAML despite what
+earlier revisions of this file said — hot-reload paths are defined
+programmatically; see below.)
 
 ### `settings.paper.yaml`
 
@@ -173,18 +176,32 @@ execution:
 
 Used to stress-test cost sensitivity and breaker paths without changing default backtest behavior. See `docs/explain/risk-and-execution.md`.
 
+> **HEAD caveat**: the backend code implementing these keys currently lives
+> only in the `tests/src/` mirror — see "Source-Tree Regression" in
+> [failures-and-fallbacks.md](failures-and-fallbacks.md).
+
 ### `risk.circuit_breakers.*`
 
 | Parameter | Default | Enforced | Meaning |
 |---|---|---|---|
-| `max_drawdown_pct` | 8.0 | Yes | Halt if drawdown ≥ 8% |
+| `max_drawdown_pct` | 8.0 | Yes (trip in `run.py`) | Halt if drawdown ≥ 8% |
 | `consecutive_execution_errors_halt` | 3 | Yes | Halt after 3 consecutive execution failures |
 | `daily_loss_limit_pct` | 2.0 | Yes | Halt if daily loss ≥ 2% |
 | `consecutive_losses_soft_pause` | 3 | Yes | Halve size after 3 consecutive losses |
-| `consecutive_losses_hard_halt` | 6 | **No** | Configured but dead — no code calls `trip("consecutive_losses_hard")` |
-| `max_trades_per_hour` | 10 | **Yes** (Phase 5) | Rolling 1-hour window |
-| `max_concurrent_positions` | 1 | **Yes** (Phase 5) | Raises error if > 1 |
+| `consecutive_losses_hard_halt` | 6 | **No** | Configured but dead — no code calls `trip("consecutive_losses_hard")`; the consistency validator hard-errors on this key |
+| `max_trades_per_hour` | 10 | **Yes** (Phase 5) | Rolling 1-hour window in `RiskLayer.evaluate()` |
+| `max_concurrent_positions` | 1 | **Yes** (Phase 5, in `run.py`) | Raises error if ≠ 1 |
 | `data_staleness_halt_seconds` | 120 | Yes | Halt if no heartbeat for 120s |
+
+Related: `execution.min_bars_between_orders: 2` exists in config but is
+**invisible to the RiskLayer** (it only receives the `risk:` block), so the
+layer uses its own default of 2 — see [layers-and-pipeline.md](layers-and-pipeline.md).
+
+**Preflight note**: with shipped defaults,
+`scripts/validate_config_consistency.py` FAILS — ~98% of simulated bars
+breach `max_spread_pct=0.05` under the synthetic-liquidity coefficients,
+and the dead-breaker key above also raises. This is an intentional tripwire;
+see [failures-and-fallbacks.md](failures-and-fallbacks.md).
 
 ### `retraining.*`
 
@@ -194,30 +211,30 @@ Used to stress-test cost sensitivity and breaker paths without changing default 
 | `promotion_margin_pct` | 5.0 | Challenger must beat champion by 5% |
 | `min_validation_samples` | 500 | Minimum samples to register |
 
-## Hot-Reload (Phase 5)
+## Hot-Reload (Phase 5 — built, NOT wired)
 
-A `ConfigWatcher` checks `settings.*.yaml`'s mtime each loop iteration and reloads on change — but only for a whitelisted safe subset:
+`src/config/config_watcher.py::ConfigWatcher` implements mtime-checked
+reloading with a safe/excluded path split. Intended usage:
 
-```yaml
-config_management:
-  hot_reload:
-    enabled: true
-    check_interval_bars: 10
-    safe_reload_paths:
-      - "risk.sizing"
-      - "risk.circuit_breakers"
-      - "labeling"
-      - "opportunity_filter.hard_rules"
-      - "feature_engine"
-    excluded_from_reload:
-      - "execution.mode"
-      - "execution.confirm_real_money"
-      - "system.sandbox"
+```python
+watcher = ConfigWatcher(
+    config_paths=["config/settings.base.yaml", "config/settings.paper.yaml"],
+    safe_reload_paths=["risk.sizing", "risk.circuit_breakers", "labeling",
+                       "opportunity_filter.hard_rules", "feature_engine"],
+    excluded_from_reload=["execution.mode", "execution.confirm_real_money",
+                          "system.sandbox"],
+    check_interval_bars=10,
+    rebuild_callback=pipeline.rebuild_layers,   # rebuild objects, don't mutate in place
+)
 ```
 
-**Safe paths** can be reloaded without restart. **Excluded paths** require a restart — a config typo mid-session should never be able to silently flip the system into live order placement.
+**Safe paths** may reload without restart; **excluded paths** always require one — a config typo mid-session must never be able to silently flip the system into live order placement. The newer mirror copy also deep-merges watched files plus the `settings.{TRADING_ENV}.yaml` overlay before invoking the callback.
 
-## Regime-Adaptive Config (Phase 5)
+> **Reality check**: no loop instantiates `ConfigWatcher` today (grep for
+> `ConfigWatcher` finds only its own module and tests). Until it's wired
+> into `run_live_loop`, all config changes require a restart.
+
+## Regime-Adaptive Config (Phase 5 — built, not yet adopted)
 
 One unified mechanism for all regime-dependent thresholds:
 
@@ -239,7 +256,9 @@ risk:
         PANIC_SPIKE: 0.0
 ```
 
-Applied to: risk sizing, circuit breaker sensitivity, TP/SL barriers, opportunity filter thresholds. Replaces the two independently-written patterns (`regime_specific_barriers` in labeling, `regime_overrides` in opportunity filter).
+**Status**: implemented + unit-tested, but production still reads the two
+older mechanisms (`labeling.regime_specific_barriers`,
+`opportunity_filter.regime_overrides`). Migrating call sites is deferred.
 
 ## Deployment Entry Point (`scripts/run.py`)
 
@@ -278,6 +297,11 @@ Both loops call `setup_logging()` (`src/utils/logging_setup.py`) at start:
 all log lines go to console **and** `data/logs/system.jsonl`; each bar's
 §8-shaped decision record is appended to `data/logs/decisions.jsonl` via
 `log_trade_decision(decision_record_from_state(state))`.
+
+> **HEAD caveat**: `src/utils/logging_setup.py` is currently missing from
+> canonical `src/` (it exists only in the `tests/src/` mirror), so
+> `scripts/run.py` fails at import until restored — see
+> [failures-and-fallbacks.md](failures-and-fallbacks.md).
 
 ## Packaging & Local Tooling
 
@@ -372,6 +396,14 @@ execution.secrets:
 ```
 
 The connector must be authenticated by the caller (e.g., CCXT reads from environment). This is a design constraint — `LiveBackend` never reads a secret directly.
+
+> **Latent quirk**: in the shipped `settings.base.yaml` those two values are
+> written as `{"BTC_BOT_API_KEY"}` (flow-set syntax), which PyYAML parses as
+> a **set/dict**, not a string. Nothing currently reads these keys at
+> runtime (the connector takes credentials straight from the environment),
+> so it's harmless today — but any future code doing
+> `os.environ[config["execution"]["secrets"]["api_key_env_var"]]` would get
+> a dict instead of a name and should fix the YAML to plain quoted strings.
 
 ## Pre-Flight Validation (Phase 5)
 

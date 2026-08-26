@@ -58,7 +58,7 @@ Layered YAML: `settings.base.yaml` (full config) merged with `settings.{env}.yam
 - Training/backtest scripts from Phase 2/3 read `settings.base.yaml` directly via `--config`.
 - `execution.mode` in the env overlay controls the backend: `paper_sim` | `paper_live` | `live`.
 - **Live trading requires BOTH** `execution.mode: "live"` AND `execution.confirm_real_money: true`. A single `--env live` is never enough.
-- **Hot-reload**: `feature_engine`, `risk.circuit_breakers`, `labeling`, and `opportunity_filter.hard_rules` can be reloaded without restart via `ConfigWatcher`. `execution.mode`, `execution.confirm_real_money`, and `system.sandbox` are excluded — they require a restart.
+- **Hot-reload (built, not wired)**: `src/config/config_watcher.py` implements mtime-based reloading of a whitelisted safe subset (`feature_engine`, `risk.circuit_breakers`, `labeling`, `opportunity_filter.hard_rules`; `execution.*`/`system.sandbox` excluded by design), but **no loop instantiates `ConfigWatcher` today** — config changes require a restart until it's wired into `run.py`.
 
 ## Training Scripts
 
@@ -126,12 +126,24 @@ Three append-only JSONL streams, each serving a different consumer:
 | `data/logs/decisions.jsonl` | One §8-shaped record per bar (regime/expert/opportunity/router/risk/decision) | `log_trade_decision()`; feed for external analysis |
 | `data/logs/decision_traces/` | Full stage-by-stage narrative + latency fields | `diagnose.py`, `replay_trade.py`, dashboard |
 
-**Latency instrumentation**: `_process_bar()` times each stage into
+> **HEAD caveat**: `src/utils/logging_setup.py` and the pipeline/trace
+> latency fields referenced above are currently present only in the stale
+> `tests/src/` mirror — see "Source-Tree Regression" in
+> [failures-and-fallbacks.md](failures-and-fallbacks.md).
+
+**Latency instrumentation** (intended design): `_process_bar()` times each stage into
 `TradingPipeline.last_bar_timings` (`features_ms`, `regime_ms`,
 `structure_ms`, `liquidity_ms`, `decisions_ms`); the same numbers flow into
 `DecisionTrace.stage_timings_ms` / `total_duration_ms`. Benchmark:
 `scripts/benchmark_latency.py` (`make latency`). Per-trade stage replay:
 `scripts/replay_trade.py --trade-id <id>`.
+
+Presentation tooling that reads these artifacts: TUI dashboard
+(`scripts/dashboard.py`, 6 views, `--once` for headless render), CLI
+diagnostics (`scripts/diagnose.py`), trade replay
+(`scripts/replay_trade.py`), figure generation
+(`scripts/generate_figures.py` → `docs/images/`, labeled ILLUSTRATIVE on
+synthetic data), and a Streamlit demo (`scripts/demo_app.py`).
 
 ## Backtest Harness & Ablations
 
@@ -158,11 +170,14 @@ def resolve_regime_param(param_block: dict, current_regime: RegimeType) -> float
     return param_block.get("by_regime", {}).get(current_regime.name, param_block["default"])
 ```
 
-Used for: risk sizing, circuit breaker sensitivity, TP/SL barriers, opportunity filter thresholds. Replaces the two independently-written patterns (`regime_specific_barriers` in labeling, `regime_overrides` in opportunity filter).
+**Status: built and tested, not yet adopted.** Production code still reads the two older patterns — `labeling.regime_specific_barriers` (plain per-regime dicts in `run.py`, `replay.py`, every training script) and `opportunity_filter.regime_overrides` (dict-merged over `hard_rules` in `OpportunityFilter._effective_hard_rules()`). The `default`/`by_regime` block shape is the intended end state for risk sizing, barrier sensitivity, and filter thresholds; migrating call sites to it is deferred work.
 
 ## Known Limitations
 
-1. **`consecutive_losses_hard` breaker is dead**: Configured as `consecutive_losses_hard_halt: 6` in `settings.base.yaml`, but no production code ever calls `trip("consecutive_losses_hard")`. The consistency validator (`validate_config_consistency.py`) catches this and logs a warning.
-2. **Pre-rename models fall back to rule-based**: All models trained before Phase 5 have `feature_version` pre-rename. They will silently fall back to rule-based mode until manually retrained.
-3. **`max_concurrent_positions > 1`**: Raises a clear error if configured to > 1. Real multi-position support is a named future item.
-4. **Synthetic liquidity defaults may disagree with Opportunity Filter thresholds**: Needs real spread data from `paper_live` mode for calibration.
+1. **Source-tree regression at HEAD**: `scripts/run.py`, `full_stack_walk_forward_backtest.py`, and `benchmark_latency.py` depend on five pieces that exist only in the stale `tests/src/` mirror, not canonical `src/` (`logging_setup.py`, trace-latency fields, `last_bar_timings`, `compute_turnover`, paper-sim realism knobs). Those entrypoints crash until restored. Full table + recovery path: [failures-and-fallbacks.md](failures-and-fallbacks.md).
+2. **`consecutive_losses_hard` breaker is dead**: Configured as `consecutive_losses_hard_halt: 6` in `settings.base.yaml`, but no production code ever calls `trip("consecutive_losses_hard")`. The consistency validator raises `ConfigConsistencyError` on it.
+3. **Preflight fails on shipped defaults**: the threshold-plausibility simulation reports ~98% of bars would fail `max_spread_pct=0.05` under the shipped synthetic-liquidity coefficients — an intentional tripwire pending real-spread calibration.
+4. **Pre-rename models fall back to rule-based**: All models trained before Phase 5 have `feature_version` pre-rename. They will silently fall back to rule-based mode until manually retrained.
+5. **`max_concurrent_positions > 1`**: Raises a clear error if configured > 1. Real multi-position support is a named future item.
+6. **Synthetic liquidity defaults disagree with Opportunity Filter thresholds**: Needs real spread data from `paper_live` mode for calibration.
+7. **Monitoring/alerting/hot-reload are unwired**: drift monitor, expectancy-gap monitor, Telegram notifier, and ConfigWatcher are implemented and tested but no loop or schedule invokes them.

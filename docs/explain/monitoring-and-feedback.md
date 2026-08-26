@@ -26,21 +26,9 @@ def population_stability_index(reference, current, n_bins=10):
 
 ### `check_feature_drift()`
 
-Compares reference vs. current feature distributions:
+Compares reference vs. current feature distributions; returns `{feature: {"psi": float, "alert": bool}}` for every feature present in both dicts.
 
-```python
-def check_feature_drift(reference, current, psi_alert_threshold=0.25):
-    results = {}
-    for feature_name in reference:
-        if feature_name not in current:
-            continue
-        psi = population_stability_index(
-            np.array(reference[feature_name]),
-            np.array(current[feature_name])
-        )
-        results[feature_name] = {"psi": psi, "alert": psi >= psi_alert_threshold}
-    return results
-```
+> **Status**: implemented and unit-tested, but nothing schedules it — wiring a daily job (the config's `monitoring.drift.check_schedule` is aspirational) is deferred work.
 
 ### `check_regime_distribution()`
 
@@ -62,20 +50,28 @@ def check_regime_distribution(recent_regimes, panic_frequency_alert_threshold=0.
 
 Alerts on:
 - High PANIC_SPIKE frequency (> 15% of recent regimes)
-- Sustained low regime confidence (< 35%)
+- Sustained low regime confidence (< 35%, only when confidences are supplied)
 
 ## Performance Monitor (`src/monitoring/performance_monitor.py`)
 
-Compares live vs. backtest expectancy per component. Detects when live performance deviates significantly from backtest expectations.
+Compares live vs. validation expectancy per component (from trade-journal rows). Detects when live performance deviates significantly from walk-forward expectations.
 
 ```python
-def check_expectancy_gap(backtest_expectancy, live_expectancy, threshold_pct=30.0):
-    """Alert if live expectancy differs from backtest by > threshold_pct%."""
-    if backtest_expectancy == 0:
-        return {"alert": False, "gap_pct": 0.0}
-    gap_pct = abs(live_expectancy - backtest_expectancy) / abs(backtest_expectancy) * 100
-    return {"alert": gap_pct >= threshold_pct, "gap_pct": gap_pct}
+def compute_expectancy_gap(validation_expectancy_pct, live_trades_pnl_pct,
+                           gap_alert_threshold_pct=30.0) -> dict:
+    """live_trades_pnl_pct: realized pnl% of the most recent rolling window.
+    gap = (validation - live) / |validation| * 100; alert when gap >= threshold
+    (or unconditionally negative expectancy when validation == 0)."""
+
+def expectancy_gap_by_component(trades, validation_expectancies,
+                                rolling_window_trades=50,
+                                gap_alert_threshold_pct=30.0) -> dict:
+    """Groups journal rows by expert_used and applies the check per component."""
 ```
+
+> **Status**: implemented and unit-tested, but nothing in the repo calls
+> these functions yet — no scheduler or loop consumes them. Same for
+> `drift_monitor.check_feature_drift()`.
 
 ## Trade Journal (`src/feedback/trade_journal.py`)
 
@@ -107,26 +103,16 @@ CREATE TABLE trade_journal (
 
 ## Zone Event Log (`src/feedback/zone_event_log.py`)
 
-Flushes `structure_engine.lifecycle_events` to Parquet. Append via read-concat-write pattern:
+Flushes `structure_engine.lifecycle_events` to Parquet. Append via read-concat-write pattern; returns the total row count after the write. An empty event list is a no-op that still returns the existing count.
 
 ```python
-def flush_zone_events(lifecycle_events, path="data/logs/zone_events.parquet"):
-    if not lifecycle_events:
-        return
-    
-    new_df = pd.DataFrame(lifecycle_events)
-    if Path(path).exists():
-        existing = pd.read_parquet(path)
-        combined = pd.concat([existing, new_df], ignore_index=True)
-    else:
-        combined = new_df
-    
-    combined.to_parquet(path, compression="snappy")
+def flush_zone_events(events, path="data/logs/zone_events.parquet") -> int: ...
+def load_zone_events(path=...) -> pd.DataFrame  # empty typed frame if absent
 ```
 
 ### Event Types
 
-`created`, `touched`, `rejected`, `broke`, `merged`, `decayed`. Each event contains: `event_type`, `zone_id`, `timestamp`, `bar_index`, and event-specific fields.
+`created`, `rejected`, `broke`, `merged`, `decayed` (from the lifecycle log — plain touches are not separate events). Each row carries: `zone_id`, `event_type`, `timestamp`, `bar_index`, `price_at_event`, `zone_strength_at_event`, `related_zone_id` (merges), and `regime_at_event`.
 
 ## System State Archive (`src/feedback/system_state_archive.py`)
 
@@ -217,9 +203,13 @@ Queries: `risk_state`, `circuit_breaker_halts`, `model_versions`, `trade_journal
 
 ## Breaker Reset (`scripts/reset_breaker.py`)
 
-Manual CLI to reset tripped circuit breakers:
+Manual CLI to reset a tripped circuit breaker (explicit `--type`, no "reset all"):
 
 ```bash
-python scripts/reset_breaker.py max_drawdown
-python scripts/reset_breaker.py all
+python scripts/reset_breaker.py --type max_drawdown
+python scripts/reset_breaker.py --type consecutive_execution_errors
+# valid types: consecutive_execution_errors | max_drawdown | consecutive_losses_hard
+#              | daily_loss_limit | data_staleness
 ```
+
+Resetting `consecutive_execution_errors` / `consecutive_losses_hard` also zeroes their underlying counters.

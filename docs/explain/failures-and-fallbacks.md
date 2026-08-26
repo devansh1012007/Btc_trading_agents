@@ -14,6 +14,7 @@
 | **Process crash** | Circuit breakers, positions | SQLite persistence, idempotent order replay |
 | **Data staleness** | Live loop | Heartbeat → data_staleness breaker |
 | **Manual intervention** | Any component | Kill switch file |
+| **Source-tree drift** | `run.py`, backtest harness, latency benchmark | None at HEAD — see "Source-Tree Regression" below; restore newer files from the `tests/src/` mirror |
 
 ## Model Fallback Chains
 
@@ -262,15 +263,13 @@ Categories of failure:
 
 **Fix**: Both `evaluate()`'s hard rule and `_liquidity_score()` now multiply by `market.close` before comparing.
 
-### Connector Swallowed AttributeError (Fixed post-Phase 5)
+### Connector Exception Behavior (post-Phase 5)
 
-`src/connectors/data_source.py`'s exception handler caught bare `Exception`, which silently swallowed `AttributeError`s from code defects (e.g., a misnamed config key) as if they were transient network failures — turning bugs into mysterious "no data" behavior.
-
-**Fix**: `AttributeError` (and other programming errors) now re-raise; only genuine fetch failures fall back.
+`src/connectors/data_source.py`'s fetch methods catch bare `Exception`, log the error, and then **re-raise** — nothing is swallowed anymore. Callers (e.g., `run.py`'s live loop) are responsible for catching transient failures; a programming error such as an `AttributeError` surfaces immediately instead of masquerading as "no data".
 
 ### consecutive_losses_hard Breaker Is Dead
 
-Configured as `consecutive_losses_hard_halt: 6` in `settings.base.yaml`, but no production code ever calls `trip("consecutive_losses_hard")`. The consistency validator (`validate_config_consistency.py`) catches this and logs a warning.
+Configured as `consecutive_losses_hard_halt: 6` in `settings.base.yaml`, but no production code ever calls `trip("consecutive_losses_hard")`. The consistency validator (`validate_config_consistency.py`) catches this and **raises** `ConfigConsistencyError` — one of the reasons preflight fails on shipped defaults (see above). Soft mitigation exists: after `consecutive_losses_soft_pause: 3` losses, position size is halved, but a true hard halt on loss streaks is unimplemented.
 
 ### Feature Schema Mismatch (Phase 5)
 
@@ -291,3 +290,81 @@ Configured as `max_concurrent_positions: 1` in `settings.base.yaml`. If set to >
 `LiveBackend` and `reconciliation.py` are structurally complete and unit-tested against a mocked exchange. But "works against a mock" and "works against Binance" are different claims. The safety gates (`test_live_mode_requires_both_flags`) and idempotency logic (`test_execution_idempotent_order_placement`) are real tests against real code paths — but they need real credentials to validate end-to-end.
 
 Use `scripts/validate_live_backend.py --testnet` to run the 5-step testnet validation runbook.
+
+## Source-Tree Regression at HEAD (CRITICAL, read first)
+
+The `tests/src/` directory is **not** test code — it is a full mirror of an
+older `src/`, committed in `4070b5f` before the test reorganization into
+`tests/{unit,integration,e2e}/`. Comparing the two trees shows the mirror is
+*newer* than canonical `src/` for ~15 modules: it contains the
+presentation-hardening pass (latency instrumentation, paper-sim realism
+knobs, structured logging, turnover metric) that `src/` at HEAD is missing.
+Several committed entrypoints depend on those missing pieces and therefore
+crash on a clean checkout:
+
+| Broken thing | Missing from `src/` | Symptom |
+|---|---|---|
+| `scripts/run.py:61` import | `src/utils/logging_setup.py` (absent; exists only as `tests/src/utils/logging_setup.py`) | `ModuleNotFoundError` at startup |
+| `run.py` trace writes | `DecisionTrace.total_duration_ms` / `stage_timings_ms` fields (`src/diagnostics/decision_trace.py`) | `TypeError` on first `DecisionTrace(...)` |
+| `run.py`, `benchmark_latency.py` | `TradingPipeline.last_bar_timings` per-stage timing property (`src/pipeline.py`) | `AttributeError` |
+| `full_stack_walk_forward_backtest.py` | `compute_turnover()` (`src/reporting/performance_report.py`) | `ImportError` |
+| `tests/unit/test_paper_sim_realism.py` | `simulated_latency_ms` / `order_rejection_rate` knobs (`src/execution/backends/paper_sim_backend.py`) | 2 test failures |
+
+Measured state at HEAD: `pytest tests/unit tests/integration` → 90 passed,
+2 failed (`test_paper_sim_realism`), 2 collection errors
+(`test_logging_setup.py`, `test_phase5.py` — both import the missing module).
+
+**Recovery path**: restore the five affected files from the `tests/src/`
+mirror (they are drop-in newer versions), or re-implement the small diffs
+(a per-stage timing property on `TradingPipeline`, two optional latency
+fields on `DecisionTrace`, one pure function in `performance_report.py`,
+two config-keyed knobs in `PaperSimBackend`). Until then,
+`make latency`, `make backtest`, and both `run.py` modes are unusable;
+the perception pipeline itself (`pipeline.py`, all layers, experts) is
+unaffected and fully tested.
+
+## Built But Not Wired (dead infrastructure)
+
+These modules are complete and unit-tested but have **no production call
+site** — nothing instantiates or schedules them:
+
+| Module | Status |
+|---|---|
+| `src/config/config_watcher.py` (`ConfigWatcher`) | Never instantiated — no loop checks mtimes, so hot-reload does not actually happen anywhere |
+| `src/config/regime_adaptive.py` (`resolve_regime_param()`) | Tested but unused; production still reads `labeling.regime_specific_barriers` and `opportunity_filter.regime_overrides` via plain dict lookups |
+| `src/monitoring/drift_monitor.py` (`check_feature_drift`, `check_regime_distribution`) | No scheduler/cron wiring exists in the repo |
+| `src/monitoring/performance_monitor.py` (`compute_expectancy_gap`, `expectancy_gap_by_component`) | Same — defined, never called by any loop or script |
+| `src/alerting/notifier.py` (`Notifier`) | Never constructed; breakers/retraining do not emit alerts yet |
+
+Treat these as "available building blocks", not active behavior.
+
+## Preflight Fails on Shipped Defaults (intentional tripwire)
+
+`scripts/validate_config_consistency.py` (and therefore
+`scripts/preflight.py`) **fails out-of-the-box** with the shipped
+`settings.base.yaml`: the threshold-plausibility simulation reports ~98% of
+simulated bars would fail `max_spread_pct=0.05` given the synthetic
+liquidity coefficients (mean synthetic spread ≈ 0.09%). This is Finding #2's
+residue wired as a gate — it refuses to bless a config that would reject
+nearly every bar. Additionally, `validate_breaker_enforcement_paths()`
+raises `ConfigConsistencyError` on `consecutive_losses_hard_halt` (a known
+dead breaker, see below), which would also fail preflight if the spread
+gate were relaxed first. Resolution requires either calibrating
+`liquidity.synthetic.*` against real spreads (paper-live sample log +
+`calibrate_synthetic_liquidity.py`) or deliberately raising
+`max_spread_pct` — not silently loosening a risk gate to manufacture
+activity.
+
+## Model-Payload Key Gaps
+
+Two trained-model pickles are **missing the `granularity` key**, which makes
+the granularity guard inert for them (a `None` recorded granularity passes
+the check unconditionally):
+
+- `data/models/opportunity_filter.pkl` — `train_opportunity_filter.py` saves only `{model, feature_names, feature_version}`.
+- `data/models/router.pkl` — same in `train_router.py`.
+
+All other training scripts (regime HMM/classifier, zone survival, experts,
+risk model) record `granularity`. Retraining those two components will not
+fix this until their scripts add the key to the payload. The
+`feature_version` guard still applies to both.

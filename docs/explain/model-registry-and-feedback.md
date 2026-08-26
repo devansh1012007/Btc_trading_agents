@@ -45,14 +45,14 @@ pending_approval → approved_active → superseded
 
 | Function | Purpose |
 |---|---|
-| `register_version(component, file_path, granularity, metrics, status)` | Register new model version |
-| `get_active(component, db_path)` | Current approved model for component |
-| `get_pending(component, db_path)` | List of pending models |
-| `get_champion(component, db_path)` | Champion model (highest avg_auc) |
-| `approve(version_id, db_path)` | Promote pending → approved_active, supersede previous |
+| `register_version(component, file_path, data_granularity, walk_forward_metrics, status="pending_approval")` | Register new model version (returns `version_id`) |
+| `get_active(component, db_path)` | File path of the current `approved_active` model, or `None` |
+| `get_pending(component=None, db_path)` | List of pending models (all components if unfiltered) |
+| `get_champion(component, db_path)` | The row currently marked `approved_active` (no metric comparison — champion = whatever a human last promoted) |
+| `approve(version_id, promoted_by, db_path)` | Promote pending → approved_active, supersede previous |
 | `reject(version_id, db_path)` | Mark as rejected |
-| `rollback(component, version_id, db_path)` | Restore previous version as approved_active |
-| `list_versions(component, db_path)` | All versions for component |
+| `rollback(component, to_version_id, promoted_by, db_path)` | Re-promote an older version through the same `approve()` path |
+| `list_versions(component, db_path)` | All versions for component, newest first |
 
 ### Key Constraint: Never Auto-Promotes
 
@@ -103,24 +103,30 @@ python scripts/retrain_all.py --input data/raw/BTCUSDT.csv --config config/setti
 
 ## Model Promotion (`scripts/approve_model.py`)
 
-```bash
-# Promote a pending model
-python scripts/approve_model.py router router_v2.pkl
+Interactive review over every `pending_approval` row: shows the current champion's metrics, the challenger's metrics, and whether it clears the promotion margin; prompts `[y/N]` per version. Answering anything but `y` records the version as `rejected`.
 
-# Promote with reviewer name
-python scripts/approve_model.py router router_v2.pkl --reviewer devansh
+```bash
+# Review all pending versions interactively
+python scripts/approve_model.py
+
+# Limit to one component / non-interactive approval (e.g. scripted)
+python scripts/approve_model.py --component router
+python scripts/approve_model.py --yes
 ```
 
-Promotes `pending_approval` → `approved_active`, marks previous as `superseded`.
+Promotes `pending_approval` → `approved_active`, marks previous champion as `superseded`. This is the ONLY code path that sets `approved_active`.
 
 ## Model Rollback (`scripts/rollback_model.py`)
 
 ```bash
-# Rollback to a previous version
-python scripts/rollback_model.py router router_v1.pkl
+# List available versions for a component
+python scripts/rollback_model.py --component router
+
+# Roll back to a specific version
+python scripts/rollback_model.py --component router --to-version <version_id>
 ```
 
-Restores previous version as `approved_active`, marks current as `superseded`.
+Restores the target as `approved_active`, marks current as `superseded` — rollback is just re-promotion, no special undo logic.
 
 ## Experiment Log (Phase 5)
 
@@ -199,20 +205,19 @@ results = check_feature_drift(
 
 ### Performance Gap Detection
 
-`performance_monitor.py` compares live vs. backtest expectancy per component. Alert threshold: 30% gap.
+`performance_monitor.py` compares live vs. validation expectancy per component. Alert threshold: 30% relative gap. (Not yet wired to any loop — see monitoring doc.)
 
 ```python
-result = check_expectancy_gap(
-    backtest_expectancy=0.05,
-    live_expectancy=0.02,
-    threshold_pct=30.0
-)
-# {"alert": True, "gap_pct": 60.0}
+result = compute_expectancy_gap(
+    validation_expectancy_pct=0.05,
+    live_trades_pnl_pct=[0.02, -0.01, 0.03, ...],   # recent rolling window
+    gap_alert_threshold_pct=30.0)
+# {"live_expectancy_pct": ..., "gap_pct": ..., "alert": bool, "n_trades": N}
 ```
 
 ### Alerting Integration
 
-When drift or performance gaps are detected, `alerting/notifier.py` sends Telegram notifications (if enabled). Event types: `pending_model_approval`, `circuit_breaker_tripped`, `execution_error`.
+When drift or performance gaps are detected, `alerting/notifier.py` is the intended notification path (Telegram, off by default). **Not wired yet**: no production code constructs a `Notifier` or emits `pending_model_approval` / `circuit_breaker_tripped` / `execution_error` events today.
 
 ## Health Check (`scripts/status.py`)
 
@@ -231,10 +236,7 @@ Queries: `risk_state`, `circuit_breaker_halts`, `model_versions`, `trade_journal
 
 ```bash
 # Reset a specific breaker
-python scripts/reset_breaker.py max_drawdown
-
-# Reset all breakers
-python scripts/reset_breaker.py all
+python scripts/reset_breaker.py --type max_drawdown
 ```
 
 Manual reset required for: `max_drawdown`, `consecutive_execution_errors`, `consecutive_losses_hard`. Auto-resets on: `daily_loss_limit` (new day), `data_staleness` (heartbeat resumes).

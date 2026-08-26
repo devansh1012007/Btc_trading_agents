@@ -54,7 +54,7 @@ Engineered features. No look-ahead bias — computed from past data only.
 | Field | Category |
 |---|---|
 | `momentum_short/medium/long` | Short-horizon |
-| `volatility_short/medium/long` | Short-horizon (note: `volatility_short` is always 0.0) |
+| `volatility_short/medium/long` | Short-horizon (at default config `volatility_periods.short = 1`, so it degenerates to 0.0 — std of one return; see labeling docs for why barriers avoid it) |
 | `returns_5` | Short-horizon |
 | `rsi_14`, `macd_signal` | Short-horizon |
 | `sma_9`, `sma_21` | Medium-horizon |
@@ -63,7 +63,10 @@ Engineered features. No look-ahead bias — computed from past data only.
 | `spread_pct`, `depth_10_level` | Liquidity |
 | `distance_to_nearest_support/resistance` | Structural (filled by `attach_structural_features`) |
 | `support_strength`, `resistance_strength` | Structural |
-| `raw_features` | Dict[str, float] | Debug |
+| `feature_computed_at` | Metadata (lag ms) |
+| `raw_features` | Dict[str, float] (`volume_zscore`) |
+
+Note: despite legacy names, `sma_9/sma_21` and `returns_5` are also config-influenced (`feature_engine.sma_periods`); only the momentum/volatility triplets got the period-agnostic rename.
 
 ### Zone
 
@@ -192,8 +195,10 @@ What actually happened when we executed.
 | `order_price/fill_price` | float | |
 | `requested_size/filled_size` | float | |
 | `slippage_pct/fees_pct/total_cost_pct` | float | Costs |
-| `status` | str | "pending", "filled", "rejected", "cancelled" |
-| `order_id` | str | |
+| `status` | str | "pending", "filled", "partial", "rejected", "cancelled" |
+| `order_id` | str | Deterministic clientOrderId (paper) or exchange id (live) |
+
+> Related intermediate type: `LiquidityEstimate` (`src/liquidity/types.py`) is deliberately **not** in `contracts.py` — it's consumed immediately to build a snapshot, never persisted as state.
 
 ### SystemState
 
@@ -222,11 +227,11 @@ One record per bar — the full stage-by-stage journey through the pipeline.
 ```python
 @dataclass(frozen=True)
 class StageResult:
-    stage_name: str          # "trend_expert_gate", "opportunity_filter", "router", "risk_layer"
+    stage_name: str          # "expert_layer", "opportunity_filter", "router", "risk_layer", "execution"
     passed: bool
     detail: str              # human-readable: "momentum 0.03% below threshold 0.05%"
     values: Dict[str, float] # actual numbers, for reproducibility
-    duration_ms: Optional[float] = None  # wall-clock stage latency (PRESENTATION §23)
+    duration_ms: Optional[float] = None  # wall-clock stage latency (see caveat)
 ```
 
 ### DecisionTrace
@@ -239,15 +244,20 @@ class DecisionTrace:
     stages: List[StageResult]     # every stage the bar passed through, in order
     terminal_stage: str            # where the journey ended
     terminal_reason: str
-    total_duration_ms: Optional[float] = None            # end-to-end decision latency for this bar
-    stage_timings_ms: Optional[Dict[str, float]] = None   # pipeline-internal per-stage latencies
+    total_duration_ms: Optional[float] = None            # end-to-end decision latency (see caveat)
+    stage_timings_ms: Optional[Dict[str, float]] = None   # pipeline-internal per-stage latencies (see caveat)
 ```
 
-The latency fields are populated by `TradingPipeline._process_bar()`
-(`pipeline.last_bar_timings` exposes the same numbers for live monitoring)
-and by `scripts/run.py`, which measures end-to-end decision latency around
-`run_live_bar()`. Benchmark harness: `scripts/benchmark_latency.py`
-(`make latency`).
+> **HEAD caveat**: canonical `src/diagnostics/decision_trace.py` does **not**
+> yet declare the three latency fields (`duration_ms`, `total_duration_ms`,
+> `stage_timings_ms`); they exist in the newer copy under the stale
+> `tests/src/` mirror. `scripts/run.py` already passes them, so it crashes
+> until the fields are restored — see "Source-Tree Regression" in
+> [failures-and-fallbacks.md](failures-and-fallbacks.md). The stage names
+> run.py actually emits are `expert_layer`, `opportunity_filter`, `router`,
+> `risk_layer`, `execution`; terminal stages are one of
+> `no_expert_candidate | opportunity_filter | router_no_trade | risk_layer |
+> executed`.
 
 Written to `data/logs/decision_traces/` as partitioned JSONL.
 
@@ -257,9 +267,9 @@ Three append-only JSONL streams, each with a distinct purpose (don't mix them):
 
 | Stream | Writer | Contents |
 |---|---|---|
-| `data/logs/system.jsonl` | `src/utils/logging_setup.py::setup_logging()` | Every log line as JSON (level, logger, message) |
-| `data/logs/decisions.jsonl` | `log_trade_decision()` via `decision_record_from_state()` | One §8-shaped record per bar: regime/expert/opportunity/router/risk/decision |
-| `data/logs/decision_traces/traces_<date>.jsonl` | `DecisionTraceWriter` | Full stage-by-stage "why" narrative + latency |
+| `data/logs/system.jsonl` | `src/utils/logging_setup.py::setup_logging()` (currently only under the `tests/src/` mirror) | Every log line as JSON (level, logger, message + extras) |
+| `data/logs/decisions.jsonl` | `log_trade_decision()` via `decision_record_from_state()` (same module) | One §8-shaped record per bar: regime/expert/opportunity/router/risk/decision |
+| `data/logs/decision_traces/traces_<date>.jsonl` | `DecisionTraceWriter` | Full stage-by-stage "why" narrative (+ latency once fields are restored) |
 
 ### SystemFault
 

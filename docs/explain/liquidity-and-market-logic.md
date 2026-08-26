@@ -20,19 +20,22 @@ The structure engine already consumed the pre-liquidity snapshot, which is safe 
 ### Model
 
 ```python
-spread_pct = base_spread_pct + k_volatility * volatility_medium + k_illiquidity / max(volume_zscore, min_volume_zscore_floor)
-bid_volume = k_depth * bar_volume * depth_participation_rate
-ask_volume = bid_volume  # Symmetric
+illiquidity_denom = max(abs(volume_zscore), min_volume_zscore_floor)
+spread_pct = base_spread_pct + k_volatility * volatility_medium + k_illiquidity / illiquidity_denom
+depth_usdt = k_depth * (bar_volume * bar_close) * depth_participation_rate   # quote-currency units
+bid_volume = ask_volume = (depth_usdt / bar_close) / 2                        # split symmetrically, base-currency units
 ```
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| `base_spread_pct` | 0.015 | Base spread |
-| `k_volatility` | 0.8 | Spread widens with volatility |
-| `k_illiquidity` | 0.02 | Spread widens with low volume |
-| `min_volume_zscore_floor` | 0.1 | Prevent division by zero |
-| `k_depth` | 3.0 | Depth scaling |
-| `depth_participation_rate` | 0.15 | Max % of bar volume we assume we can fill |
+| `base_spread_pct` | 0.015 | Base spread (%) |
+| `k_volatility` | 0.8 | Spread widens with `volatility_medium` |
+| `k_illiquidity` | 0.02 | Spread widens as |volume z-score| shrinks |
+| `min_volume_zscore_floor` | 0.1 | Prevents division blow-up |
+| `k_depth` | 3.0 | Depth scaling vs bar notional |
+| `depth_participation_rate` | 0.15 | Fraction of bar notional assumed executable |
+
+Depth is stored in **base currency (BTC)** on the snapshot — matching `MarketSnapshot.bid_volume/ask_volume` semantics; consumers multiply by `close` to get USDT before comparing against thresholds.
 
 ### `LiquidityEstimate`
 
