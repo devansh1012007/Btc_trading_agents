@@ -12,14 +12,24 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from ..state.contracts import FeatureVector, RegimeState, RegimeType
+from ..state.contracts import FEATURE_SCHEMA_VERSION, FeatureVector, RegimeState, RegimeType
 from ..utils.rolling_buffer import RollingBarBuffer
 
 logger = logging.getLogger(__name__)
 
 HMM_STATE_LABELS = ["trending_up", "trending_down", "chop_range"]
 HMM_OBSERVATION_FEATURES = [
-    "momentum_5m", "momentum_10m", "volatility_5m", "volatility_10m", "volume_zscore",
+    "momentum_medium", "momentum_long", "volatility_medium", "volatility_long", "volume_zscore",
+]
+
+# Full classifier feature set (includes all FeatureVector fields used by the
+# regime classifier). Centralized here so train_regime_models.py imports it
+# instead of hardcoding a second copy of these names.
+CLASSIFIER_FEATURE_NAMES = [
+    "momentum_short", "momentum_medium", "momentum_long", "volatility_short",
+    "volatility_medium", "volatility_long", "returns_5", "rsi_14", "macd_signal",
+    "sma_9", "sma_21", "imbalance_ratio", "orderflow_momentum", "spread_pct",
+    "depth_10_level",
 ]
 
 
@@ -117,6 +127,14 @@ class RegimeDetector:
                 f"running on {self.data_granularity}. Treating as absent (Phase 3 §4.7)."
             )
             return True
+
+        trained_feature_version = payload.get("feature_version")
+        if trained_feature_version is not None and trained_feature_version != FEATURE_SCHEMA_VERSION:
+            logger.warning(
+                f"{model_label} at {path} trained on feature_schema={trained_feature_version}, "
+                f"current schema={FEATURE_SCHEMA_VERSION}. Treating as absent."
+            )
+            return True
         return False
 
     def _load_models(self, hmm_model_path: str, classifier_model_path: str) -> None:
@@ -155,12 +173,12 @@ class RegimeDetector:
         raw = feature_vector.raw_features or {}
         self._obs_buffer.append({
             "timestamp": feature_vector.timestamp,
-            "momentum_5m": feature_vector.momentum_5m,
-            "momentum_10m": feature_vector.momentum_10m,
-            "volatility_5m": feature_vector.volatility_5m,
-            "volatility_10m": feature_vector.volatility_10m,
-            "volatility_30s": feature_vector.volatility_30s,
-            "momentum_30s": feature_vector.momentum_30s,
+            "momentum_medium": feature_vector.momentum_medium,
+            "momentum_long": feature_vector.momentum_long,
+            "volatility_medium": feature_vector.volatility_medium,
+            "volatility_long": feature_vector.volatility_long,
+            "volatility_short": feature_vector.volatility_short,
+            "momentum_short": feature_vector.momentum_short,
             "volume_zscore": raw.get("volume_zscore", 0.0),
         })
 
@@ -202,17 +220,17 @@ class RegimeDetector:
             return self._classify_with_rule(feature_vector)
 
         labels = ["trending_up", "trending_down", "chop_range", "panic_spike"]
-        probs = {cls: float(p) for cls, p in zip(classes, proba)}
+        probs = {cls: float(p) for cls, p in zip(classes, proba, strict=False)}
         for label in labels:
             probs.setdefault(label, 0.0)
-        total = sum(probs[l] for l in labels) or 1.0
+        total = sum(probs[lbl] for lbl in labels) or 1.0
         return {k: probs[k] / total for k in labels}
 
     def _classify_with_hmm(self, feature_vector: FeatureVector) -> Dict[str, float]:
         obs = self._hmm_observation_vector()
         p_panic = panic_score(
-            volatility_z=self._zscore(feature_vector.volatility_30s, "volatility_30s"),
-            momentum_z=self._zscore(feature_vector.momentum_30s, "momentum_30s"),
+            volatility_z=self._zscore(feature_vector.volatility_short, "volatility_short"),
+            momentum_z=self._zscore(feature_vector.momentum_short, "momentum_short"),
             volume_z=self._latest_volume_zscore(),
             z_threshold=self.panic_z_threshold,
         )
@@ -236,13 +254,13 @@ class RegimeDetector:
 
     def _classify_with_rule(self, feature_vector: FeatureVector) -> Dict[str, float]:
         p_panic = panic_score(
-            volatility_z=self._zscore(feature_vector.volatility_30s, "volatility_30s"),
-            momentum_z=self._zscore(feature_vector.momentum_30s, "momentum_30s"),
+            volatility_z=self._zscore(feature_vector.volatility_short, "volatility_short"),
+            momentum_z=self._zscore(feature_vector.momentum_short, "momentum_short"),
             volume_z=self._latest_volume_zscore(),
             z_threshold=self.panic_z_threshold,
         )
 
-        momentum = feature_vector.momentum_5m
+        momentum = feature_vector.momentum_medium
         if momentum > 0.05:
             base = {"trending_up": 0.6, "trending_down": 0.1, "chop_range": 0.3}
         elif momentum < -0.05:

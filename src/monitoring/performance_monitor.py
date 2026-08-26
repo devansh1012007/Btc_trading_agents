@@ -5,7 +5,7 @@ router's actual rolling realized performance (from the trade journal)
 against what its walk-forward validation predicted. A meaningful,
 sustained gap here is worth more than any single feature's PSI score.
 """
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import numpy as np
 

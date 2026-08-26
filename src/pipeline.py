@@ -26,23 +26,24 @@ settings.yaml and threaded through to every layer's model-loading guard
 """
 import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import Optional
+
 import pandas as pd
 import yaml
 
 from src.connectors.data_source import CCXTConnector
-from src.layers.market_data import MarketDataLayer
-from src.layers.feature_engine import FeatureEngine
-from src.layers.regime_detector import RegimeDetector
-from src.layers.structure_engine import DynamicStructureEngine
-from src.layers.structural_features import attach_structural_features
-from src.layers.expert_layer import ExpertLayer
-from src.layers.opportunity_filter import OpportunityFilter
-from src.layers.router import Router
 from src.experts.expert_registry import build_experts
+from src.layers.expert_layer import ExpertLayer
+from src.layers.feature_engine import FeatureEngine
+from src.layers.market_data import MarketDataLayer
+from src.layers.opportunity_filter import OpportunityFilter
+from src.layers.regime_detector import RegimeDetector
+from src.layers.router import Router
+from src.layers.structural_features import attach_structural_features
+from src.layers.structure_engine import DynamicStructureEngine
 from src.liquidity.synthetic_liquidity_model import attach_synthetic_liquidity
-from src.state.contracts import SystemState, MarketSnapshot, FeatureVector
-from src.state.serialization import system_state_to_dict, dataframe_to_parquet
+from src.state.contracts import MarketSnapshot, SystemState
+from src.state.serialization import system_state_to_dict
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +95,7 @@ class TradingPipeline:
             system_cfg.get("exchange", exchange_name), system_cfg.get("sandbox", sandbox)
         )
 
-        self.feature_engine = FeatureEngine(lookback_bars=data_cfg.get("lookback_bars", 100))
+        self.feature_engine = FeatureEngine(lookback_bars=data_cfg.get("lookback_bars", 100), config=self.config)
 
         self.regime_detector = RegimeDetector(
             hmm_model_path=models_cfg.get("regime_hmm", "data/models/regime_hmm.pkl"),

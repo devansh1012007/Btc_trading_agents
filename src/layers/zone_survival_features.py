@@ -7,7 +7,7 @@ from typing import Dict, Optional
 
 import numpy as np
 
-from ..state.contracts import Zone, RegimeState
+from ..state.contracts import RegimeState, Zone
 
 ZONE_SURVIVAL_FEATURE_NAMES = [
     "strength", "age", "touch_count", "zone_width_pct",

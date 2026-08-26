@@ -12,9 +12,10 @@ import logging
 import pickle
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Dict
+from typing import Dict, List
 
-import numpy as np
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import pandas as pd
 import yaml
 
@@ -22,10 +23,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 from src.backtest.replay import replay_full_stack
-from src.labeling.triple_barrier import label_triple_barrier, compute_barrier_pcts, barrier_volatility_pct
+from src.backtest.walk_forward import WalkForwardSplitter
+from src.labeling.triple_barrier import barrier_volatility_pct, compute_barrier_pcts, label_triple_barrier
 from src.layers.opportunity_filter import FEATURE_NAMES, build_features
 from src.state.contracts import ExpertAction
-from src.backtest.walk_forward import WalkForwardSplitter
 
 
 def load_config(path="config/settings.base.yaml") -> dict:
@@ -84,7 +85,7 @@ def harvest(df_ohlcv: pd.DataFrame, symbol: str, config: dict) -> pd.DataFrame:
 
 def train_and_validate(df, splitter):
     import lightgbm as lgb
-    from sklearn.metrics import roc_auc_score, accuracy_score
+    from sklearn.metrics import accuracy_score, roc_auc_score
 
     X = df[FEATURE_NAMES].values
     y = df["label"].values
@@ -148,7 +149,7 @@ def main():
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "wb") as f:
-        pickle.dump({"model": model, "feature_names": FEATURE_NAMES}, f)
+        pickle.dump({"model": model, "feature_names": FEATURE_NAMES, "feature_version": "v2_renamed"}, f)
 
     model_card = {
         "trained_at": datetime.now(timezone.utc).isoformat(), "n_samples": int(len(df)),

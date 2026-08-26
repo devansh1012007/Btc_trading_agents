@@ -12,14 +12,16 @@ import pickle
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import pandas as pd
 import yaml
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from src.experts.trend_expert import FEATURE_NAMES
 from src.backtest.walk_forward import WalkForwardSplitter
+from src.experts.trend_expert import FEATURE_NAMES
 
 
 def load_config(path="config/settings.base.yaml") -> dict:
@@ -29,7 +31,7 @@ def load_config(path="config/settings.base.yaml") -> dict:
 
 def train_and_validate(df: pd.DataFrame, splitter: WalkForwardSplitter):
     import lightgbm as lgb
-    from sklearn.metrics import roc_auc_score, accuracy_score
+    from sklearn.metrics import accuracy_score, roc_auc_score
 
     X = df[FEATURE_NAMES].values
     y = df["label"].values
@@ -88,6 +90,7 @@ def main():
     unfavorable = df[df["label"] == 0]["realized_return_pct"]
     payload = {
         "model": model, "feature_names": FEATURE_NAMES, "granularity": data_granularity,
+        "feature_version": "v2_renamed",
         "avg_favorable_return": float(favorable.mean()) if len(favorable) else 0.0,
         "avg_unfavorable_return": float(unfavorable.mean()) if len(unfavorable) else 0.0,
         "avg_adverse_excursion": float(df["max_adverse_excursion_pct"].mean()) if len(df) else 0.0,

@@ -7,9 +7,9 @@ breakers and the model registry.
 """
 import uuid
 from datetime import datetime, timezone
-from typing import Optional, List, Dict
+from typing import Dict, List
 
-from ..registry.db import connect, DEFAULT_DB_PATH
+from ..registry.db import DEFAULT_DB_PATH, connect
 
 
 def record_trade_entry(

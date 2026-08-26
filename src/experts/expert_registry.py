@@ -6,9 +6,9 @@ training script build them identically.
 from typing import Dict
 
 from .base_expert import BaseExpert
-from .trend_expert import TrendExpert
-from .mean_reversion_expert import MeanReversionExpert
 from .breakout_expert import BreakoutExpert
+from .mean_reversion_expert import MeanReversionExpert
+from .trend_expert import TrendExpert
 
 
 def build_experts(config: dict, data_granularity: str = "1m") -> Dict[str, BaseExpert]:

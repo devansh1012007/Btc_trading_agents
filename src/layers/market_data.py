@@ -2,10 +2,11 @@
 Market Data Layer: Convert raw exchange data to MarketSnapshot.
 This layer is NOT predictive. It just represents current market state.
 """
-import pandas as pd
-from datetime import datetime
-from typing import Optional, Dict, Any
 import logging
+from datetime import datetime
+from typing import Dict, Optional
+
+import pandas as pd
 
 from ..state.contracts import MarketSnapshot
 

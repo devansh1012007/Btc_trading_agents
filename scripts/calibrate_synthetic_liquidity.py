@@ -9,7 +9,7 @@ synthetic estimate for that same bar -- this script fits the synthetic
 model's coefficients against those paired observations via ordinary
 least squares, rather than leaving them as guesses forever.
 
-Expects a Parquet log of paired samples with columns: volatility_5m,
+Expects a Parquet log of paired samples with columns: volatility_medium,
 volume_zscore, bar_volume, bar_close, real_spread_pct, real_depth_usdt.
 This log is not produced automatically by anything in Phase 4 as shipped
 -- wiring paper-live-data mode to write it is a small, natural follow-on
@@ -40,7 +40,7 @@ def fit_spread_model(df: pd.DataFrame) -> dict:
     """
     floor = 0.1
     illiquidity_term = 1.0 / np.maximum(np.abs(df["volume_zscore"]), floor)
-    X = np.column_stack([np.ones(len(df)), df["volatility_5m"].values, illiquidity_term])
+    X = np.column_stack([np.ones(len(df)), df["volatility_medium"].values, illiquidity_term])
     y = df["real_spread_pct"].values
 
     coeffs, residuals, rank, sv = np.linalg.lstsq(X, y, rcond=None)
@@ -78,7 +78,7 @@ def main():
         )
 
     df = pd.read_parquet(input_path)
-    required = {"volatility_5m", "volume_zscore", "bar_volume", "bar_close", "real_spread_pct", "real_depth_usdt"}
+    required = {"volatility_medium", "volume_zscore", "bar_volume", "bar_close", "real_spread_pct", "real_depth_usdt"}
     missing = required - set(df.columns)
     if missing:
         raise SystemExit(f"Input is missing required columns: {missing}")

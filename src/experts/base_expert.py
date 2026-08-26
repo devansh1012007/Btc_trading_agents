@@ -13,7 +13,15 @@ from typing import Dict, Optional, Tuple
 
 import numpy as np
 
-from ..state.contracts import FeatureVector, ZoneMap, RegimeState, RegimeType, ExpertOutput, ExpertAction
+from ..state.contracts import (
+    FEATURE_SCHEMA_VERSION,
+    ExpertAction,
+    ExpertOutput,
+    FeatureVector,
+    RegimeState,
+    RegimeType,
+    ZoneMap,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +71,14 @@ class BaseExpert(ABC):
                 f"[{self.expert_name}] Model trained on granularity={trained_granularity}, "
                 f"running on {self.data_granularity}. Falling back to rule-based mode. "
                 f"Retrain with scripts/train_{self.expert_name}.py."
+            )
+            return
+
+        trained_feature_version = payload.get("feature_version")
+        if trained_feature_version is not None and trained_feature_version != FEATURE_SCHEMA_VERSION:
+            logger.warning(
+                f"[{self.expert_name}] Model trained on feature_schema={trained_feature_version}, "
+                f"current schema={FEATURE_SCHEMA_VERSION}. Falling back to rule-based mode."
             )
             return
 

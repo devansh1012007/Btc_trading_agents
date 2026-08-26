@@ -5,28 +5,28 @@ agrees, is confident, and is persistent.
 import logging
 from typing import Dict, Optional
 
-from ..state.contracts import FeatureVector, ZoneMap, RegimeState, ExpertOutput, ExpertAction
+from ..state.contracts import ExpertAction, ExpertOutput, FeatureVector, RegimeState, ZoneMap
 from ..utils.config_helpers import parse_regime_list
 from .base_expert import BaseExpert, compute_invalidation_distance
 
 logger = logging.getLogger(__name__)
 
 FEATURE_NAMES = [
-    "momentum_5m", "momentum_10m", "sma_slope", "invalidation_distance",
-    "regime_confidence", "regime_persistence_score", "volatility_5m",
+    "momentum_medium", "momentum_long", "sma_slope", "invalidation_distance",
+    "regime_confidence", "regime_persistence_score", "volatility_medium",
 ]
 
 
 def build_features(fv: FeatureVector, zones: ZoneMap, regime: RegimeState, direction: int) -> Dict[str, float]:
     invalidation_distance, _ = compute_invalidation_distance(fv, direction)
     return {
-        "momentum_5m": fv.momentum_5m,
-        "momentum_10m": fv.momentum_10m,
+        "momentum_medium": fv.momentum_medium,
+        "momentum_long": fv.momentum_long,
         "sma_slope": fv.sma_9 - fv.sma_21,
         "invalidation_distance": invalidation_distance,
         "regime_confidence": regime.regime_confidence,
         "regime_persistence_score": regime.regime_persistence_score,
-        "volatility_5m": fv.volatility_5m,
+        "volatility_medium": fv.volatility_medium,
     }
 
 
@@ -47,7 +47,7 @@ class TrendExpert(BaseExpert):
         if regime.regime_persistence_score < cfg["persistence_requirement"]:
             return None
 
-        momentum = fv.momentum_5m
+        momentum = fv.momentum_medium
         if abs(momentum) < cfg["momentum_threshold"]:
             return None
 

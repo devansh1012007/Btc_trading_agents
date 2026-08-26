@@ -3,12 +3,9 @@ Shared state contract for the trading system.
 All layers read/write through these immutable dataclasses.
 This is the single source of truth for system state.
 """
-from dataclasses import dataclass, field, asdict
-from typing import Dict, List, Optional, Any
+from dataclasses import asdict, dataclass, field
 from enum import Enum
-import json
-from datetime import datetime
-import numpy as np
+from typing import Dict, List, Optional
 
 # ============================================================================
 # REGIME & STRUCTURE ENUMS
@@ -85,29 +82,39 @@ class MarketSnapshot:
 # LAYER 2: FEATURE VECTOR
 # ============================================================================
 
+# Feature schema version — incremented whenever FeatureVector field names
+# change. Model loaders check this against their saved payload to avoid
+# silently degrading (getattr on a renamed field returns 0.0, not an error).
+FEATURE_SCHEMA_VERSION = "v2_renamed"
+
+
 @dataclass(frozen=True)
 class FeatureVector:
     """
     Engineered features for all downstream layers.
     No look-ahead bias; computed from past data only.
+    Field names are period-agnostic (short/medium/long) because the actual
+    periods are config-driven via feature_engine.momentum_periods and
+    feature_engine.volatility_periods — a name like "momentum_5m" would
+    lie if the config changed that period to 3.
     """
     timestamp: int
     symbol: str
 
-    # Short-horizon features (30s-2m)
-    momentum_30s: float
-    momentum_5m: float
-    volatility_30s: float
-    volatility_5m: float
+    # Short-horizon features (config-driven period, default 1 bar)
+    momentum_short: float
+    momentum_medium: float
+    volatility_short: float
+    volatility_medium: float
     returns_5: float  # 5-bar return
     rsi_14: float
     macd_signal: float
 
-    # Medium-horizon features (5-10m)
+    # Medium-horizon features (config-driven period)
     sma_9: float
     sma_21: float
-    momentum_10m: float
-    volatility_10m: float
+    momentum_long: float
+    volatility_long: float
 
     # Orderflow features
     imbalance_ratio: float  # aggressive_buy / total_volume

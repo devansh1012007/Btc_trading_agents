@@ -41,7 +41,7 @@ def estimate_synthetic_liquidity(fv: FeatureVector, bar: MarketSnapshot, cfg: di
 
     volume_zscore = (fv.raw_features or {}).get("volume_zscore", 0.0)
     illiquidity_denom = max(abs(volume_zscore), min_vz_floor)
-    spread_pct = base_spread_pct + k_volatility * fv.volatility_5m + k_illiquidity / illiquidity_denom
+    spread_pct = base_spread_pct + k_volatility * fv.volatility_medium + k_illiquidity / illiquidity_denom
     spread_pct = max(spread_pct, 0.0)
 
     depth_usdt = k_depth * (bar.volume * bar.close) * participation

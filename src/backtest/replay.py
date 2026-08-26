@@ -12,21 +12,21 @@ serving time -- rather than seven slightly-different reimplementations
 that could silently drift apart.
 """
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict
+from typing import Dict, List
 
 import pandas as pd
 
-from ..layers.market_data import MarketDataLayer
-from ..layers.feature_engine import FeatureEngine
-from ..layers.regime_detector import RegimeDetector
-from ..layers.structure_engine import DynamicStructureEngine
-from ..layers.structural_features import attach_structural_features
-from ..layers.expert_layer import ExpertLayer
-from ..layers.opportunity_filter import OpportunityFilter
-from ..layers.router import Router
 from ..experts.expert_registry import build_experts
+from ..layers.expert_layer import ExpertLayer
+from ..layers.feature_engine import FeatureEngine
+from ..layers.market_data import MarketDataLayer
+from ..layers.opportunity_filter import OpportunityFilter
+from ..layers.regime_detector import RegimeDetector
+from ..layers.router import Router
+from ..layers.structural_features import attach_structural_features
+from ..layers.structure_engine import DynamicStructureEngine
 from ..liquidity.synthetic_liquidity_model import attach_synthetic_liquidity
-from ..state.contracts import SystemState, MarketSnapshot
+from ..state.contracts import MarketSnapshot, SystemState
 
 
 @dataclass
@@ -58,7 +58,7 @@ def replay_full_stack(
     liquidity_cfg = config.get("liquidity", {}).get("synthetic", {})
     data_granularity = system_cfg.get("data_granularity", "1m")
 
-    feature_engine = FeatureEngine(lookback_bars=data_cfg.get("lookback_bars", 100))
+    feature_engine = FeatureEngine(lookback_bars=data_cfg.get("lookback_bars", 100), config=config)
     regime_detector = RegimeDetector(
         hmm_model_path=models_cfg.get("regime_hmm", "data/models/regime_hmm.pkl"),
         classifier_model_path=models_cfg.get("regime_classifier", "data/models/regime_classifier.pkl"),
@@ -158,7 +158,7 @@ def harvest_zone_touch_candidates(
       - breakout of support      -> price continued DOWN -> short (-1)
       - breakout of resistance   -> price continued UP    -> long  (+1)
     """
-    from ..labeling.triple_barrier import label_triple_barrier, compute_barrier_pcts, barrier_volatility_pct
+    from ..labeling.triple_barrier import barrier_volatility_pct, compute_barrier_pcts, label_triple_barrier
 
     result = replay_full_stack(df_ohlcv, symbol, config, run_experts=False)
 

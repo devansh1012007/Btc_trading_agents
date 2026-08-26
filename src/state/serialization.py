@@ -15,13 +15,16 @@ use the JSON-blob-column approach (§9 option A from Phase 2's plan) --
 they're genuinely nested, not flat records.
 """
 import json
-from dataclasses import asdict, fields
-from typing import Dict, Any, List
+from typing import Any, Dict, List
+
 import pandas as pd
-from datetime import datetime
+
 from .contracts import (
-    SystemState, MarketSnapshot, FeatureVector, RegimeState, Zone, ZoneMap,
-    ExpertOutput, ExpertOutputs, OpportunityScore, RouterDecision, RiskDecision, ExecutionRecord,
+    ExpertOutput,
+    ExpertOutputs,
+    SystemState,
+    Zone,
+    ZoneMap,
 )
 
 
@@ -116,9 +119,9 @@ def system_state_to_dict(state: SystemState) -> Dict[str, Any]:
     if state.feature_vector:
         fv = state.feature_vector
         d.update({f'feature_{k}': v for k, v in {
-            'momentum_30s': fv.momentum_30s, 'momentum_5m': fv.momentum_5m,
-            'momentum_10m': fv.momentum_10m, 'volatility_30s': fv.volatility_30s,
-            'volatility_5m': fv.volatility_5m, 'volatility_10m': fv.volatility_10m,
+            'momentum_short': fv.momentum_short, 'momentum_medium': fv.momentum_medium,
+            'momentum_long': fv.momentum_long, 'volatility_short': fv.volatility_short,
+            'volatility_medium': fv.volatility_medium, 'volatility_long': fv.volatility_long,
             'returns_5': fv.returns_5, 'rsi_14': fv.rsi_14, 'macd_signal': fv.macd_signal,
             'sma_9': fv.sma_9, 'sma_21': fv.sma_21, 'imbalance_ratio': fv.imbalance_ratio,
             'orderflow_momentum': fv.orderflow_momentum, 'spread_pct': fv.spread_pct,

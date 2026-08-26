@@ -4,6 +4,7 @@ window of bar data across the perception layers (FeatureEngine,
 DynamicStructureEngine, RegimeDetector, BreakoutExpert).
 """
 from typing import Dict, List, Optional
+
 import numpy as np
 
 

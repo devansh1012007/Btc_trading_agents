@@ -13,7 +13,15 @@ from typing import Dict, Optional
 
 import numpy as np
 
-from ..state.contracts import ExpertOutputs, RegimeState, ZoneMap, OpportunityScore, RouterDecision, ExpertAction
+from ..state.contracts import (
+    FEATURE_SCHEMA_VERSION,
+    ExpertAction,
+    ExpertOutputs,
+    OpportunityScore,
+    RegimeState,
+    RouterDecision,
+    ZoneMap,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +92,14 @@ class Router:
             )
             return
 
+        trained_feature_version = payload.get("feature_version")
+        if trained_feature_version is not None and trained_feature_version != FEATURE_SCHEMA_VERSION:
+            logger.warning(
+                f"Router model trained on feature_schema={trained_feature_version}, "
+                f"current schema={FEATURE_SCHEMA_VERSION}. Falling back to confidence-based mode."
+            )
+            return
+
         self._model = payload["model"]
         self._model_feature_names = payload["feature_names"]
         logger.info(f"Loaded router model from {p}")
@@ -135,7 +151,7 @@ class Router:
             return self._decide_with_fallback(expert_outputs, opportunity_score)
 
         model_probs = {cls: 0.0 for cls in ROUTER_CLASSES}
-        model_probs.update({cls: float(p) for cls, p in zip(classes, proba) if cls in model_probs})
+        model_probs.update({cls: float(p) for cls, p in zip(classes, proba, strict=False) if cls in model_probs})
 
         confidence_probs = {
             name: (expert_outputs.get_by_name(name).confidence if expert_outputs.get_by_name(name) else 0.0)

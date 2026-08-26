@@ -4,8 +4,8 @@ their outputs into a single ExpertOutputs.
 """
 from typing import Dict
 
-from ..state.contracts import FeatureVector, ZoneMap, RegimeState, ExpertOutputs
 from ..experts.base_expert import BaseExpert
+from ..state.contracts import ExpertOutputs, FeatureVector, RegimeState, ZoneMap
 
 
 class ExpertLayer:

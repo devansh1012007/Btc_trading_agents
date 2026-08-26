@@ -28,17 +28,17 @@ def compute_barrier_pcts(volatility_pct: float, k_tp: float, k_sl: float) -> Tup
 def barrier_volatility_pct(fv) -> float:
     """
     The volatility figure every Phase 3 barrier-sizing call site should
-    use. Deliberately volatility_5m, NOT volatility_30s: FeatureEngine
-    computes volatility_30s as the std of a single 1-period return
+    use. Deliberately volatility_medium, NOT volatility_short: FeatureEngine
+    computes volatility_short as the std of a single 1-period return
     (periods=1), and np.std() of a one-element array is 0.0 by
     mathematical necessity -- not a bug you can tune around, a
     denominator that is always exactly zero. Every barrier collapsed to
     zero width and every simulated trade lost exactly the round-trip fee
-    until this was traced down (see PHASE3_COMPLETE.md). volatility_5m
+    until this was traced down (see PHASE3_COMPLETE.md). volatility_medium
     (periods=5) is a well-defined dispersion statistic and the closest
     genuinely-computed alternative.
     """
-    return max(fv.volatility_5m, 1e-6)
+    return max(fv.volatility_medium, 1e-6)
 
 
 def label_triple_barrier(

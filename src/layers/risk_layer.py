@@ -17,24 +17,31 @@ import json
 import logging
 import os
 import pickle
-from datetime import datetime, timezone, date
+from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 
+from ..registry.db import DEFAULT_DB_PATH, connect
 from ..state.contracts import (
-    ExpertOutputs, RegimeState, ZoneMap, MarketSnapshot, FeatureVector,
-    RouterDecision, RiskDecision, ExpertAction,
+    FEATURE_SCHEMA_VERSION,
+    ExpertAction,
+    ExpertOutputs,
+    FeatureVector,
+    MarketSnapshot,
+    RegimeState,
+    RiskDecision,
+    RouterDecision,
+    ZoneMap,
 )
 from ..utils.config_helpers import parse_regime_list
-from ..registry.db import connect, DEFAULT_DB_PATH
 
 logger = logging.getLogger(__name__)
 
 FEATURE_NAMES = [
     "invalidation_distance", "router_selection_confidence", "regime_confidence",
-    "volatility_5m", "spread_pct", "liquidity_depth_usdt", "expected_return", "expected_risk",
+    "volatility_medium", "spread_pct", "liquidity_depth_usdt", "expected_return", "expected_risk",
 ]
 
 
@@ -47,7 +54,7 @@ def build_features(
         "invalidation_distance": expert_output.invalidation_distance,
         "router_selection_confidence": router_decision.selection_confidence,
         "regime_confidence": regime.regime_confidence,
-        "volatility_5m": fv.volatility_5m,
+        "volatility_medium": fv.volatility_medium,
         "spread_pct": market.spread_pct,
         "liquidity_depth_usdt": depth_usdt,
         "expected_return": expert_output.expected_return,
@@ -235,6 +242,13 @@ class RiskLayer:
         self._current_expert: Optional[str] = None
         self._bars_since_switch = 0
 
+        # Trade rate limiting (Phase 5, §6.3): enforce max_trades_per_hour
+        # and min_bars_between_orders from config.
+        self._trade_timestamps: list = []  # timestamps of last N trades
+        self._min_bars_between_orders = config.get("min_bars_between_orders", self.breaker_cfg.get("min_bars_between_orders", 2))
+        self._bars_since_last_order = self._min_bars_between_orders  # start at threshold so first eval isn't blocked
+        self._max_trades_per_hour = self.breaker_cfg.get("max_trades_per_hour", 10)
+
     def _load_model(self, path: str) -> None:
         p = Path(path)
         if not p.exists():
@@ -252,6 +266,14 @@ class RiskLayer:
             logger.warning(
                 f"Risk model trained on granularity={trained_granularity}, running on "
                 f"{self.data_granularity}. Falling back to rule-based sizing only."
+            )
+            return
+
+        trained_feature_version = payload.get("feature_version")
+        if trained_feature_version is not None and trained_feature_version != FEATURE_SCHEMA_VERSION:
+            logger.warning(
+                f"Risk model trained on feature_schema={trained_feature_version}, "
+                f"current schema={FEATURE_SCHEMA_VERSION}. Falling back to rule-based sizing only."
             )
             return
 
@@ -319,6 +341,19 @@ class RiskLayer:
         if expert_output is None or expert_output.action == ExpertAction.NO_TRADE:
             return reject("selected_expert_has_no_candidate", risk_score=0.0)
 
+        # 5b. Trade rate limiting (Phase 5, §6.3): enforce max_trades_per_hour
+        # and min_bars_between_orders from config.
+        # Clean up old timestamps (older than 1 hour)
+        current_ts = ts
+        cutoff_hour_ago = current_ts - 3600
+        self._trade_timestamps = [t for t in self._trade_timestamps if t > cutoff_hour_ago]
+        if len(self._trade_timestamps) >= self._max_trades_per_hour:
+            return reject(f"max_trades_per_hour({self._max_trades_per_hour}) reached")
+
+        # Min bars between orders
+        if self._bars_since_last_order < self._min_bars_between_orders:
+            return reject(f"min_bars_between_orders({self._min_bars_between_orders}) not met")
+
         # 6. Hard rules: invalidation distance bounds.
         dist = expert_output.invalidation_distance
         if dist < self.hard_rules.get("min_invalidation_distance_pct", 0.0):
@@ -380,3 +415,12 @@ class RiskLayer:
             base_size=base_size, adjusted_size=adjusted_size, size_reduction_pct=float(size_reduction_pct),
             rejection_reason=None,
         )
+
+    def record_trade(self, timestamp: int) -> None:
+        """Record a successful trade for rate limiting."""
+        self._trade_timestamps.append(timestamp)
+        self._bars_since_last_order = 0
+
+    def advance_bar(self) -> None:
+        """Called each bar to update bar counters."""
+        self._bars_since_last_order += 1

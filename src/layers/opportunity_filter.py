@@ -12,14 +12,22 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from ..state.contracts import ExpertOutputs, RegimeState, ZoneMap, MarketSnapshot, FeatureVector, OpportunityScore
+from ..state.contracts import (
+    FEATURE_SCHEMA_VERSION,
+    ExpertOutputs,
+    FeatureVector,
+    MarketSnapshot,
+    OpportunityScore,
+    RegimeState,
+    ZoneMap,
+)
 from ..utils.config_helpers import parse_regime_list
 
 logger = logging.getLogger(__name__)
 
 FEATURE_NAMES = [
     "best_confidence", "mean_no_trade_probability", "edge_vs_fees",
-    "spread_pct", "volatility_5m", "regime_confidence", "regime_persistence_score",
+    "spread_pct", "volatility_medium", "regime_confidence", "regime_persistence_score",
     "zone_num_active",
 ]
 
@@ -36,7 +44,7 @@ def build_features(
         "mean_no_trade_probability": mean_no_trade,
         "edge_vs_fees": edge_vs_fees,
         "spread_pct": market.spread_pct,
-        "volatility_5m": fv.volatility_5m,
+        "volatility_medium": fv.volatility_medium,
         "regime_confidence": regime.regime_confidence,
         "regime_persistence_score": regime.regime_persistence_score,
         "zone_num_active": float(len(zone_map.zones)) if zone_map else 0.0,
@@ -78,6 +86,14 @@ class OpportunityFilter:
             )
             return
 
+        trained_feature_version = payload.get("feature_version")
+        if trained_feature_version is not None and trained_feature_version != FEATURE_SCHEMA_VERSION:
+            logger.warning(
+                f"Opportunity filter model trained on feature_schema={trained_feature_version}, "
+                f"current schema={FEATURE_SCHEMA_VERSION}. Falling back to hard-rules-only mode."
+            )
+            return
+
         self._model = payload["model"]
         self._model_feature_names = payload["feature_names"]
         logger.info(f"Loaded opportunity filter model from {p}")
@@ -115,7 +131,7 @@ class OpportunityFilter:
         if depth_usdt < cfg.get("min_depth_usdt", 0.0):
             failed_rules.append(f"insufficient_depth({depth_usdt:.2f})")
 
-        recent_vol = fv.volatility_5m
+        recent_vol = fv.volatility_medium
         if recent_vol < cfg.get("volatility_floor_pct", 0.0):
             failed_rules.append(f"market_too_dead({recent_vol:.4f})")
         if recent_vol > cfg.get("volatility_ceiling_pct", float("inf")):
