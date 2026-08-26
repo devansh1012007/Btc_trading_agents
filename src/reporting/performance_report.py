@@ -75,6 +75,23 @@ def compute_trade_stats(trades: List[dict]) -> dict:
     }
 
 
+def compute_turnover(trades: List[dict], initial_equity: float) -> Tuple[Optional[float], float]:
+    """
+    Compute turnover multiple (total_notional / initial_equity) and total
+    notional in USDT from a list of trade dicts.
+
+    Each trade dict should carry ``entry_price`` and ``size_usdt`` (or
+    ``filled_size``) — defaults to 0 when absent.
+    """
+    notional = 0.0
+    for t in trades:
+        price = float(t.get("entry_price", 0.0))
+        size = float(t.get("size_usdt", t.get("filled_size", 0.0)))
+        notional += price * size
+    turnover_x = notional / initial_equity if initial_equity > 0 else None
+    return turnover_x, notional
+
+
 def equity_curve_drawdown_pct(equity_curve: List[float]) -> float:
     """
     Max peak-to-trough drawdown as a POSITIVE percentage (e.g. 6.5 means
