@@ -79,7 +79,7 @@ def build_signal_path_view(snap: dict):
     funnel.add_column("share", justify="right")
     funnel.add_column("", overflow="crop")
     for r in snap["funnel"]:
-        style = "green" if r["stage"] == "executed" else ("red" if r["stage"] == "circuit_breaker" else "white")
+        style = dd.STAGE_STYLES.get(r["stage"], "white")
         funnel.add_row(f"[{style}]{r['label']}[/]", str(r["count"]),
                        f"{r['pct']:.1f}%", _bar(r["pct"], 20))
 

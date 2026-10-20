@@ -6,10 +6,18 @@ Fills are simulated via the shared simulate_fill() math; no network calls
 at all.
 """
 import logging
-import math
+from typing import Optional
 
 from ...liquidity.types import LiquidityEstimate
-from ...state.contracts import ExecutionRecord, ExpertAction, ExpertOutput, MarketSnapshot, RiskDecision, RouterDecision
+from ...state.contracts import (
+    ExecutionRecord,
+    ExpertAction,
+    ExpertOutput,
+    FeatureVector,
+    MarketSnapshot,
+    RiskDecision,
+    RouterDecision,
+)
 from ..execution_engine import ExecutionBackend, make_client_order_id, simulate_fill
 
 logger = logging.getLogger(__name__)
@@ -29,6 +37,7 @@ class PaperSimBackend(ExecutionBackend):
     def place_order(
         self, risk_decision: RiskDecision, router_decision: RouterDecision,
         expert_output: ExpertOutput, market: MarketSnapshot,
+        fv: Optional[FeatureVector] = None,
     ) -> ExecutionRecord:
         # --- order rejection knob ---
         rejection_rate = self.config.get("order_rejection_rate", 0.0)

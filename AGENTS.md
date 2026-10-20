@@ -13,6 +13,9 @@ src/
   labeling/                ← triple_barrier labeling
   backtest/                ← replay.py, walk_forward.py
   execution/               ← execution_engine + paper_sim/paper_live/live backends
+    position_lifecycle.py   ← OpenPosition, check_position_exit,
+                              build_execution_engine (shared by the
+                              deployment loop and the GUI replay)
   liquidity/               ← synthetic_liquidity_model
   registry/                ← model registry (SQLite: pending → approved → superseded)
   feedback/                ← trade_journal, zone_event_log, system_state_archive
@@ -20,13 +23,29 @@ src/
   connectors/              ← CCXTConnector
   alerting/                ← notifier
   diagnostics/             ← decision_trace.py (Phase 5: stage-by-stage bar traces)
+    decision_trace.py      ← TERMINAL_STAGES (the ONE stage vocabulary),
+                              classify_terminal_stage(), build_trace_stages()
+    dashboard_data.py      ← loaders for the TUI console; STAGE_LABELS /
+                              STAGE_STYLES live next to the vocabulary
   config/                  ← regime_adaptive.py, config_watcher.py (Phase 5)
     regime_adaptive.py     ← resolve_regime_param() — unified regime-dependent threshold resolution
     config_watcher.py      ← ConfigWatcher — hot-reload for safe config paths
+  gui/                     ← Trade Map GUI core (no plotly/streamlit imports)
+    models.py              ← SessionBundle + the column vocabularies every
+                              surface shares (empty_frame/normalize_dtypes)
+    timeframes.py          ← parse_timeframe, bucket_start_series,
+                              causal resample_ohlcv, align_to_timeframe
+    indicators.py          ← causal EMA/RSI/MACD/ATR/BB/VWAP/Donchian
+                              (TradingView/TA-Lib seeding)
+    artifacts.py           ← READ-ONLY readers for the trade journal, §8
+                              log, decision traces, zone events, OHLCV
+    instruments.py         ← InstrumentSpec + the YAML contract registry
+    replay.py              ← replays a session through the real pipeline
 config/
   settings.base.yaml       ← full config (all layers)
   settings.paper.yaml      ← env overlay (default)
   settings.live.yaml       ← env overlay
+  instruments.yaml         ← instrument registry (spot/perp/option/equity)
 scripts/
   run.py                   ← deployment entry (historical replay + live loop)
   full_stack_walk_forward_backtest.py ← M5.2: realized-metrics backtest vs Project_Plan.md
@@ -60,10 +79,19 @@ tests/
     test_invariants.py     ← Financial invariants (position caps, breakers,
                               duplicate-order prevention) — extend when
                               adding risk controls
+  unit/                    ← per-component tests
+    test_decision_trace.py ← Terminal-stage vocabulary + classifier contract
+    test_gui_core.py       ← Timeframes, indicators, instrument registry
+    test_gui_data.py       ← Artifact readers (schema, timestamps, dtypes)
+    test_gui_correctness.py← Defects the Phase-1 review found (units,
+                              causality, dtypes, symbol matching)
+    test_gui_regressions.py← The original review's regression set
   integration/             ← cross-layer wiring through the real pipeline
     test_integration.py    ← Full-stack integration
+    test_gui_replay.py     ← GUI replay == the deployment loop, bar for bar
   e2e/
     test_backtest_smoke.py ← Backtest entrypoint as a subprocess; report artifacts
+    test_run_observability.py ← The §8 feed + decision traces the GUI reads
 data/                      ← gitignored: raw/, processed/, models/, logs/
   logs/decision_traces/    ← partitioned JSONL traces (Phase 5; per-stage
                               duration_ms + total_duration_ms latency fields)
@@ -77,7 +105,10 @@ data/                      ← gitignored: raw/, processed/, models/, logs/
 
 - `pyproject.toml` — installable (`pip install -e ".[dev]"`); deps mirror
   requirements.txt (keep in sync; Docker installs from requirements.txt).
-- Extras: `dev` (ruff, mypy, pytest-cov), `demo` (streamlit, matplotlib).
+- Extras: `dev` (ruff, mypy, pytest-cov), `demo` (streamlit, matplotlib), `viz` (plotly).
+- `src` is the installed top-level package (`[tool.setuptools.packages.find]`).
+  Do not remove it: flat-layout auto-discovery would install `src/`'s
+  CONTENTS as top-level packages and break `import src.gui`.
 - CI: `.github/workflows/ci.yml` — ruff → mypy (strict modules + global
   lenient) → pytest with coverage. `make check` runs the same locally.
 - mypy: `src/state` + `src/reporting` are strict (`disallow_untyped_defs`);
@@ -124,6 +155,9 @@ python scripts/diagnose.py --summary --since 2026-08-01
 python scripts/diagnose.py --timestamp 1755900000
 
 # Pre-flight validation before starting a session
+# NOTE: on the SHIPPED config this currently FAILS the liquidity gate
+# ("~98% of simulated bars would fail max_spread_pct=0.05") -- the
+# synthetic liquidity model is wider than the shipped gate allows.
 python scripts/preflight.py --env paper
 
 # Config consistency validation
@@ -138,18 +172,30 @@ python scripts/replay_trade.py --list 10
 python scripts/replay_trade.py --trade-id <id>
 
 # Latency/memory benchmark (synthetic, deterministic)
-python scripts/benchmark_latency.py --synthetic 300   # or: make latency
+python scripts/benchmark_latency.py --bars 300        # or: make latency
 
 # Figures for docs/images (labeled ILLUSTRATIVE on synthetic data)
 python scripts/generate_figures.py --synthetic 900 --relax-liquidity
 
 # Streamlit decision demo (offline synthetic by default)
-streamlit run scripts/demo_app.py    # or: make demo
+# NOTE: ports are NOT Streamlit's default 8501 — see "Ports" below.
+streamlit run scripts/demo_app.py    # or: make demo  (http://127.0.0.1:8571)
+make demo STREAMLIT_PORT=8600        # override the port
+```
 
 # Ablation ladder (contribution of each component)
 python scripts/full_stack_walk_forward_backtest.py --synthetic 900 --relax-liquidity \
     --single-expert trend_expert     # also: --no-risk-layer, --no-regime-gating
 ```
+
+## Ports (shared hosts)
+
+Streamlit binds **127.0.0.1:8571** by default (`make demo`), not
+Streamlit's 8501, because several checkouts (or several agents) can run
+on the same host. `.streamlit/config.toml` holds the default; the
+`STREAMLIT_PORT` Makefile variable overrides it per invocation.
+**Never stop another project's container or dev server to free a port —
+pick a different one.**
 
 ## Config system (easy to get wrong)
 
@@ -158,6 +204,9 @@ python scripts/full_stack_walk_forward_backtest.py --synthetic 900 --relax-liqui
 - Training/backtest scripts from Phase 2/3 are offline utilities; they read `settings.base.yaml` directly via `--config`.
 - `system.data_granularity` (e.g. `"1m"`, `"30s"`) is the **only** switch for timeframe — no code change needed. All layers check it for model-granularity compatibility.
 - `execution.mode` in the env overlay controls the backend: `paper_sim` | `paper_live` | `live`.
+- `config/instruments.yaml` is NOT part of the layered config: it is a
+  registry of contract metadata (asset class, strike, expiry, multiplier),
+  resolved relative to the REPO ROOT (never the CWD) so it cannot vanish.
 - **Live trading requires BOTH** `execution.mode: "live"` AND `execution.confirm_real_money: true` (guarded by `LiveTradingNotConfirmedError`).
 - **Hot-reload**: `feature_engine`, `risk.circuit_breakers`, `labeling`, and `opportunity_filter.hard_rules` can be reloaded without restart via `ConfigWatcher`. `execution.mode`, `execution.confirm_real_money`, and `system.sandbox` are excluded — they require a restart.
 
@@ -192,7 +241,14 @@ MarketSnapshot → FeatureVector → RegimeState → ZoneMap →
 - **Kill switch**: `data/control/EMERGENCY_STOP` file halts the live loop.
 - **Consistency validation**: `scripts/preflight.py` runs before session start — validates unit consistency, threshold plausibility, breaker enforcement paths, and feature schema version.
 - Tests have **no conftest.py** — all fixtures are inline helper functions in each test file.
-- No lint/typecheck/format config exists. Just `pytest`.
+- **Tests must not write to the repo's TRACKED `data/`.**
+  `data/registry.db` is tracked, so a test that writes to it dirties the
+  working tree; `data/raw|processed|logs|models` are gitignored. Run
+  entry-point subprocesses with `cwd=` an isolated temp dir (and copy
+  `config/` into it — the config and the registry are both CWD-relative).
+- Lint and typecheck ARE configured: `ruff` in `pyproject.toml`
+  (`[tool.ruff]`) and `mypy` (`[tool.mypy]`; `src/state` + `src/reporting`
+  are strict). `make check` runs lint + typecheck + tests.
 
 ## Deep-dive documentation
 

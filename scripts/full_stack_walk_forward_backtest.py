@@ -366,12 +366,11 @@ def run_full_stack_pass(df_ohlcv: pd.DataFrame, symbol: str, config: dict,
                             max_holding_bars=max_holding_bars,
                             fees_paid=execution_record.filled_size * (execution_record.fees_pct / 100),
                         )
-                        # extras carried alongside OpenPosition (not part of its schema)
-                        object.__setattr__(open_pos, "expert", state.router_decision.selected_expert)
-                        object.__setattr__(open_pos, "regime", state.regime_state.primary_regime.value)
-                        object.__setattr__(open_pos, "selection_confidence",
-                                           state.router_decision.selection_confidence)
-                        object.__setattr__(open_pos, "risk_score", risk_decision.risk_score)
+                        # extras carried alongside OpenPosition
+                        open_pos.expert = state.router_decision.selected_expert
+                        open_pos.regime = state.regime_state.primary_regime.value
+                        open_pos.selection_confidence = state.router_decision.selection_confidence
+                        open_pos.risk_score = risk_decision.risk_score
 
                     state = dc_replace(state, execution_record=execution_record)
 

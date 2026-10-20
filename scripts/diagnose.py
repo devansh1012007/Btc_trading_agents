@@ -28,6 +28,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
+# `python scripts/diagnose.py` puts scripts/ on sys.path, not the repo
+# root, so `import src...` would fail without this. Same bootstrap the
+# other entry-point scripts use.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 
 def load_traces(base_dir: str = "data/logs/decision_traces") -> List[dict]:
     """Load all decision trace files from the base directory."""
@@ -98,15 +103,9 @@ def print_summary(traces: List[dict], since: Optional[str] = None) -> None:
         print(f"  (since {since})")
     print(f"{'='*60}")
 
-    # Human-readable labels for terminal stages
-    stage_labels = {
-        "no_expert_candidate": "No expert candidate",
-        "opportunity_filter": "Failed opportunity filter",
-        "router_no_trade": "Rejected by router",
-        "risk_layer": "Rejected by risk layer",
-        "circuit_breaker": "Circuit breaker active",
-        "executed": "Executed",
-    }
+    # Human-readable labels for terminal stages -- shared with the TUI
+    # dashboard and the Trade Map GUI.
+    from src.diagnostics.dashboard_data import STAGE_LABELS as stage_labels
 
     for stage, count in sorted(terminal_counts.items(), key=lambda x: -x[1]):
         label = stage_labels.get(stage, stage)

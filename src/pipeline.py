@@ -25,8 +25,9 @@ settings.yaml and threaded through to every layer's model-loading guard
 (§4.7) and the historical-fetch timeframe.
 """
 import logging
+import time
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
 
 import pandas as pd
 import yaml
@@ -137,6 +138,16 @@ class TradingPipeline:
         Path(f"{data_dir}/processed").mkdir(parents=True, exist_ok=True)
         Path(f"{data_dir}/logs").mkdir(parents=True, exist_ok=True)
 
+        # Per-stage latency instrumentation. Populated by every
+        # _process_bar call; read via the `last_bar_timings` property.
+        self._timings: Dict[str, float] = {}
+        self._perf = time.perf_counter
+
+    @property
+    def last_bar_timings(self) -> Dict[str, float]:
+        """Wall-clock milliseconds per pipeline stage for the most recent bar."""
+        return dict(self._timings)
+
     @staticmethod
     def _load_config(config_path: str) -> dict:
         path = Path(config_path)
@@ -147,28 +158,55 @@ class TradingPipeline:
             return yaml.safe_load(f) or {}
 
     def _process_bar(self, snapshot: MarketSnapshot) -> Optional[SystemState]:
+        # Per-stage wall-clock timing: written to self._timings every bar;
+        # consumers (decision traces, latency benchmarks) read it after
+        # run_live_bar returns. Reset per bar so a warm-up bar (which
+        # returns early) cannot leave the PREVIOUS bar's numbers next to
+        # this bar's.
+        self._timings = {}
+        t = self._perf()
         self.feature_engine.add_bar(snapshot)
         fv = self.feature_engine.compute_features(snapshot)
+        self._timings["features_ms"] = (self._perf() - t) * 1000
         if fv is None:
             return None
 
+        t = self._perf()
         self.regime_detector.add_bar(fv)
         regime_state = self.regime_detector.compute_regime(fv, symbol=snapshot.symbol)
+        self._timings["regime_ms"] = (self._perf() - t) * 1000
 
+        t = self._perf()
         self.structure_engine.add_bar(snapshot)
         zone_map = self.structure_engine.compute_zones(
             current_price=snapshot.close, symbol=snapshot.symbol, regime_state=regime_state,
         )
+        self._timings["structure_ms"] = (self._perf() - t) * 1000
 
+        t = self._perf()
         fv = attach_structural_features(fv, zone_map)
 
         # Phase 4 §4.2 / Finding #2 fix -- see replay.py's identical
         # comment for the full rationale and the two-pass design note.
         snapshot = attach_synthetic_liquidity(snapshot, fv, self.liquidity_cfg)
+        self._timings["liquidity_ms"] = (self._perf() - t) * 1000
 
+        t = self._perf()
         expert_outputs = self.expert_layer.evaluate(fv, zone_map, regime_state)
+        self._timings["expert_layer_ms"] = (self._perf() - t) * 1000
+
+        t = self._perf()
         opportunity_score = self.opportunity_filter.evaluate(expert_outputs, regime_state, zone_map, snapshot, fv)
+        self._timings["opportunity_filter_ms"] = (self._perf() - t) * 1000
+
+        t = self._perf()
         router_decision = self.router.decide(expert_outputs, regime_state, zone_map, opportunity_score)
+        self._timings["router_ms"] = (self._perf() - t) * 1000
+        self._timings["decisions_ms"] = (
+            self._timings["expert_layer_ms"]
+            + self._timings["opportunity_filter_ms"]
+            + self._timings["router_ms"]
+        )
 
         return SystemState(
             timestamp=snapshot.timestamp, symbol=snapshot.symbol, market_snapshot=snapshot,

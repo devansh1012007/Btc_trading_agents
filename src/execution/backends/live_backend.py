@@ -29,11 +29,20 @@ end-to-end.
 """
 import logging
 from datetime import datetime, timezone
+from typing import Optional
 
 from ...liquidity.real_orderbook_adapter import fetch_real_liquidity
 from ...liquidity.types import LiquidityEstimate
 from ...registry.db import DEFAULT_DB_PATH, connect
-from ...state.contracts import ExecutionRecord, ExpertAction, ExpertOutput, MarketSnapshot, RiskDecision, RouterDecision
+from ...state.contracts import (
+    ExecutionRecord,
+    ExpertAction,
+    ExpertOutput,
+    FeatureVector,
+    MarketSnapshot,
+    RiskDecision,
+    RouterDecision,
+)
 from ..execution_engine import ExecutionBackend, make_client_order_id
 
 logger = logging.getLogger(__name__)
@@ -81,6 +90,7 @@ class LiveBackend(ExecutionBackend):
     def place_order(
         self, risk_decision: RiskDecision, router_decision: RouterDecision,
         expert_output: ExpertOutput, market: MarketSnapshot,
+        fv: Optional[FeatureVector] = None,
     ) -> ExecutionRecord:
         side = "BUY" if expert_output.action == ExpertAction.BUY else "SELL"
         client_order_id = make_client_order_id(

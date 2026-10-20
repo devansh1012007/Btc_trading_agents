@@ -24,15 +24,30 @@ REGISTRY_DB = "data/registry.db"
 REPORT_DIR = "data/reports"
 KILL_SWITCH_PATH = "data/control/EMERGENCY_STOP"
 
-# Canonical human-readable labels for trace terminal stages. diagnose.py's
-# --summary output uses the same categories; keep wording aligned.
-STAGE_LABELS = {
-    "no_expert_candidate": "No expert candidate",
-    "opportunity_filter": "Failed opportunity filter",
-    "router_no_trade": "Rejected by router",
-    "risk_layer": "Rejected by risk layer",
-    "circuit_breaker": "Circuit breaker active",
-    "executed": "Executed",
+# Canonical stage names AND their human-readable labels live in
+# src/diagnostics/decision_trace.py -- one vocabulary, so the TUI
+# dashboard, the diagnostics CLI and the Trade Map GUI can never disagree
+# about what a stage is called.
+#
+# The drift guard between the two is a UNIT TEST (tests/unit/
+# test_decision_trace.py), not an import-time assert: an assert here
+# would turn a routine vocabulary addition into a boot failure of the
+# whole GUI package, and it is stripped under `python -O` anyway.
+from .decision_trace import STAGE_LABELS, TERMINAL_STAGES  # noqa: E402,F401
+
+#: Terminal stage -> terminal-console style. Lives here, next to the
+#: vocabulary, so it is covered by the same unit test that guards the
+#: vocabulary itself (a stage with no style would silently render in the
+#: default colour).
+STAGE_STYLES: Dict[str, str] = {
+    "executed": "green",
+    "circuit_breaker": "red",
+    "execution_failed": "red",
+    "risk_layer": "yellow",
+    "opportunity_filter": "yellow",
+    "router_no_trade": "cyan",
+    "no_expert_candidate": "white",
+    "position_open": "magenta",
 }
 
 

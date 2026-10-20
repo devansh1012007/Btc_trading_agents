@@ -33,9 +33,9 @@ import os
 import sys
 import time
 import traceback
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import pandas as pd
 
@@ -44,11 +44,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-from src.diagnostics.decision_trace import DecisionTrace, DecisionTraceWriter, StageResult
-from src.execution.backends.live_backend import LiveBackend
-from src.execution.backends.paper_live_backend import PaperLiveBackend
-from src.execution.backends.paper_sim_backend import PaperSimBackend
+from src.diagnostics.decision_trace import (
+    DecisionTrace,
+    DecisionTraceWriter,
+    StageResult,
+    build_trace_stages,
+    classify_terminal_stage,
+)
 from src.execution.execution_engine import ExecutionEngine
+from src.execution.position_lifecycle import (
+    OpenPosition,
+    build_execution_engine,
+    check_position_exit,
+)
 from src.execution.reconciliation import reconcile
 from src.feedback.system_state_archive import write_system_state_archive
 from src.feedback.trade_journal import record_trade_entry, record_trade_exit
@@ -56,82 +64,35 @@ from src.feedback.zone_event_log import flush_zone_events
 from src.labeling.triple_barrier import barrier_volatility_pct, compute_barrier_pcts
 from src.layers.risk_layer import RiskLayer, RiskStateStore
 from src.pipeline import TradingPipeline
-from src.state.contracts import ExpertAction, SystemState
+from src.state.contracts import SystemState
 from src.utils.config_helpers import load_layered_config
 from src.utils.logging_setup import decision_record_from_state, log_trade_decision, setup_logging
+from src.utils.time_utils import describe_epoch_unit, epoch_seconds
 
 GRANULARITY_SECONDS = {"10s": 10, "30s": 30, "1m": 60, "5m": 300}
 
 
-@dataclass
-class OpenPosition:
-    trade_id: str
-    entry_timestamp: int
-    entry_price: float
-    direction: int
-    size_usdt: float
-    take_profit_pct: float
-    stop_loss_pct: float
-    max_holding_bars: int
-    bars_held: int = 0
-    fees_paid: float = 0.0
+def load_ohlcv_for_run(input_path: Path) -> pd.DataFrame:
+    """Load the historical input and normalise its timestamp column.
 
-
-def build_execution_engine(config: dict, connector, symbol: str) -> ExecutionEngine:
-    exec_cfg = config.get("execution", {})
-    mode = exec_cfg.get("mode", "paper_sim")
-    fee_pct = config.get("labeling", {}).get("fee_pct", 0.04)
-
-    if mode == "paper_sim":
-        backend = PaperSimBackend(exec_cfg, fee_pct=fee_pct)
-    elif mode == "paper_live":
-        backend = PaperLiveBackend(exec_cfg, connector, symbol, fee_pct=fee_pct)
-    elif mode == "live":
-        backend = LiveBackend(exec_cfg, connector, symbol)
-    else:
-        raise ValueError(f"Unknown execution.mode: {mode}")
-
-    return ExecutionEngine(backend, mode)
-
-
-def check_position_exit(position: OpenPosition, bar, fee_pct: float) -> Optional[dict]:
-    """One bar-step of triple-barrier-style exit checking for a live open
-    position -- same TP/SL/timeout convention as
-    src/labeling/triple_barrier.py, applied incrementally instead of over
-    a pre-collected forward window (there is no "forward window" yet when
-    running live; each bar arrives one at a time)."""
-    entry = position.entry_price
-    if position.direction == 1:
-        tp_level = entry * (1 + position.take_profit_pct / 100)
-        sl_level = entry * (1 - position.stop_loss_pct / 100)
-        hit_tp, hit_sl = bar.high >= tp_level, bar.low <= sl_level
-    else:
-        tp_level = entry * (1 - position.take_profit_pct / 100)
-        sl_level = entry * (1 + position.stop_loss_pct / 100)
-        hit_tp, hit_sl = bar.low <= tp_level, bar.high >= sl_level
-
-    position.bars_held += 1
-
-    if hit_sl:
-        exit_price, exit_reason = sl_level, "stop_loss"
-    elif hit_tp:
-        exit_price, exit_reason = tp_level, "take_profit"
-    elif position.bars_held >= position.max_holding_bars:
-        exit_price, exit_reason = bar.close, "timeout"
-    else:
-        return None
-
-    raw_return_pct = (
-        (exit_price - entry) / entry * 100 if position.direction == 1
-        else (entry - exit_price) / entry * 100
-    )
-    realized_pnl_pct = raw_return_pct - (fee_pct * 2)
-    realized_pnl_usdt = position.size_usdt * (realized_pnl_pct / 100)
-
-    return {
-        "exit_price": exit_price, "exit_reason": exit_reason,
-        "realized_pnl_pct": realized_pnl_pct, "realized_pnl_usdt": realized_pnl_usdt,
-    }
+    A numeric timestamp column is epoch seconds / milliseconds /
+    microseconds / nanoseconds -- pandas' default for a bare integer
+    column treats them as nanoseconds, which silently collapses every
+    bar onto 1970-01-01. The unit is detected per value by the SAME
+    helper the GUI uses, so the two can never disagree about when the
+    system traded, and it is logged so a mislabelled unit cannot pass
+    unnoticed.
+    """
+    df = pd.read_csv(input_path) if input_path.suffix == ".csv" else pd.read_parquet(input_path)
+    if "timestamp" in df.columns:
+        ts = df["timestamp"]
+        if pd.api.types.is_numeric_dtype(ts):
+            unit = describe_epoch_unit(ts) or "s"
+            logger.info("Reading %s timestamps as epoch %s", input_path, unit)
+        else:
+            logger.info("Reading %s timestamps as datetimes", input_path)
+        df["timestamp"] = pd.to_datetime(epoch_seconds(ts), unit="s", utc=True)
+    return df.sort_values("timestamp").reset_index(drop=True)
 
 
 def run_historical(pipeline: TradingPipeline, risk_layer: RiskLayer, execution_engine: ExecutionEngine,
@@ -158,99 +119,16 @@ def run_historical(pipeline: TradingPipeline, risk_layer: RiskLayer, execution_e
             continue
         risk_layer.store.heartbeat()
 
-        # Build decision trace stages from pipeline output
-        stages: List[StageResult] = []
-
-        # Stage: expert layer
-        expert_outputs = state.expert_outputs
-        if expert_outputs and expert_outputs.all():
-            candidates = [o for o in expert_outputs.all() if o.action != ExpertAction.NO_TRADE]
-            if candidates:
-                stages.append(StageResult(
-                    stage_name="expert_layer", passed=True,
-                    detail=f"{len(candidates)} candidate(s): {', '.join(c.expert_name for c in candidates)}",
-                    values={o.expert_name: o.confidence for o in candidates},
-                ))
-            else:
-                stages.append(StageResult(
-                    stage_name="expert_layer", passed=False,
-                    detail="All experts returned NO_TRADE",
-                    values={},
-                ))
-        else:
-            stages.append(StageResult(
-                stage_name="expert_layer", passed=False,
-                detail="No expert outputs",
-                values={},
-            ))
-
-        # Stage: opportunity filter
-        opp_score = state.opportunity_score
-        if opp_score:
-            stages.append(StageResult(
-                stage_name="opportunity_filter", passed=opp_score.tradable,
-                detail=" ".join(opp_score.failed_rules) if opp_score.failed_rules else "passed",
-                values={"tradable_probability": opp_score.tradable_probability,
-                        "environment_quality": opp_score.environment_quality},
-            ))
-
-        # Stage: router
-        router_decision = state.router_decision
-        if router_decision:
-            stages.append(StageResult(
-                stage_name="router", passed=router_decision.selected_expert != "no_trade",
-                detail=router_decision.reasoning or "",
-                values={"selection_confidence": router_decision.selection_confidence,
-                        "no_trade_probability": router_decision.no_trade_probability},
-            ))
-
-        # Stage: risk layer
-        risk_decision = state.risk_decision
-        if risk_decision:
-            stages.append(StageResult(
-                stage_name="risk_layer", passed=risk_decision.approved,
-                detail=risk_decision.rejection_reason or "",
-                values={"risk_score": risk_decision.risk_score,
-                        "size_reduction_pct": risk_decision.size_reduction_pct},
-            ))
-
-        # Stage: execution
-        exec_record = state.execution_record
-        if exec_record:
-            stages.append(StageResult(
-                stage_name="execution", passed=exec_record.status in ("filled", "partial"),
-                detail=f"status={exec_record.status}",
-                values={"fill_price": exec_record.fill_price, "slippage_pct": exec_record.slippage_pct},
-            ))
-
-        # Determine terminal stage and reason. Filter veto is classified
-        # BEFORE the router: when the filter rejects, Router.decide() itself
-        # returns no_trade with reasoning "opportunity_filter_rejected", so
-        # checking the router first mislabels every filter veto.
-        if exec_record and exec_record.status in ("filled", "partial"):
-            terminal_stage = "executed"
-            terminal_reason = f"filled via {state.router_decision.selected_expert if state.router_decision else 'unknown'}"
-        elif risk_decision and not risk_decision.approved:
-            terminal_stage = "risk_layer"
-            terminal_reason = risk_decision.rejection_reason or "risk rejection"
-        elif opp_score and not opp_score.tradable:
-            terminal_stage = "opportunity_filter"
-            terminal_reason = " | ".join(opp_score.failed_rules) if opp_score.failed_rules else "filter veto"
-        elif router_decision and router_decision.selected_expert == "no_trade":
-            terminal_stage = "router_no_trade"
-            terminal_reason = router_decision.reasoning or "router declined"
-        else:
-            terminal_stage = "no_expert_candidate"
-            terminal_reason = "no expert candidate"
-
-        trace_writer.append(DecisionTrace(
-            timestamp=state.timestamp, symbol=state.symbol,
-            stages=stages, terminal_stage=terminal_stage, terminal_reason=terminal_reason,
-            total_duration_ms=decision_latency_ms,
-            stage_timings_ms=pipeline.last_bar_timings,
-        ))
-        log_trade_decision({**decision_record_from_state(state),
-                            "terminal_stage": terminal_stage, "terminal_reason": terminal_reason})
+        # Per-bar risk / execution results. The pipeline returns a fresh
+        # SystemState for every bar, so `state` can never carry the
+        # previous bar's outcome; these locals hold this bar's results
+        # and are reset so a bar that never reaches the risk layer
+        # cannot report the previous bar's.
+        risk_decision = None
+        execution_record = None
+        execution_failed = False
+        execution_error = ""
+        stage_timings_ms: Dict[str, float] = {}
 
         realized_pnl_this_bar = 0.0
 
@@ -286,62 +164,104 @@ def run_historical(pipeline: TradingPipeline, risk_layer: RiskLayer, execution_e
                 f"Must be >= 1. (Real multi-position support is a future item.)"
             )
 
-        # Enforce max_concurrent_positions from config
-        if max_concurrent == 1 and open_position is not None:
-            # Skip new entry if we already have a position
-            risk_layer.advance_bar()
-            continue
+        # Enforce max_concurrent_positions from config. When a position
+        # is already open the bar is still processed (traced, archived) --
+        # it simply cannot open a second one.
+        position_is_open = max_concurrent == 1 and open_position is not None
 
-        if open_position is None and state.router_decision is not None:
-            risk_decision = risk_layer.evaluate(
-                state.router_decision, state.expert_outputs, state.regime_state,
-                state.zone_map, state.feature_vector, state.market_snapshot, equity,
-            )
-            state = replace(state, risk_decision=risk_decision)
+        if not position_is_open:
+            if open_position is None and state.router_decision is not None:
+                t_risk = time.perf_counter()
+                risk_decision = risk_layer.evaluate(
+                    state.router_decision, state.expert_outputs, state.regime_state,
+                    state.zone_map, state.feature_vector, state.market_snapshot, equity,
+                )
+                stage_timings_ms["risk_layer_ms"] = (time.perf_counter() - t_risk) * 1000
+                state = replace(state, risk_decision=risk_decision)
 
-            if risk_decision.approved:
-                expert_output = state.expert_outputs.get_by_name(state.router_decision.selected_expert)
-                try:
-                    execution_record = execution_engine.place_order(
-                        risk_decision, state.router_decision, expert_output, state.market_snapshot,
-                    )
-                    risk_layer.store.record_execution_result(success=True)
-                except Exception as e:
-                    logger.error(f"Execution failed: {e}")
-                    risk_layer.store.record_execution_result(success=False)
-                    if risk_layer.store.consecutive_execution_errors() >= risk_layer.breaker_cfg.get("consecutive_execution_errors_halt", 3):
-                        risk_layer.store.trip("consecutive_execution_errors", "3 consecutive execution failures")
-                    execution_record = None
+                if risk_decision.approved:
+                    expert_output = state.expert_outputs.get_by_name(state.router_decision.selected_expert)
+                    t_exec = time.perf_counter()
+                    try:
+                        execution_record = execution_engine.place_order(
+                            risk_decision, state.router_decision, expert_output, state.market_snapshot,
+                            fv=state.feature_vector,
+                        )
+                        risk_layer.store.record_execution_result(success=True)
+                    except Exception as e:
+                        logger.error(f"Execution failed: {e}")
+                        risk_layer.store.record_execution_result(success=False)
+                        if risk_layer.store.consecutive_execution_errors() >= risk_layer.breaker_cfg.get("consecutive_execution_errors_halt", 3):
+                            risk_layer.store.trip("consecutive_execution_errors", "3 consecutive execution failures")
+                        execution_record = None
+                        # The bar must be reported as a failed execution,
+                        # not as "no expert candidate": the expert and
+                        # the risk layer both said yes, and it was the
+                        # order placement that broke.
+                        execution_failed = True
+                        execution_error = str(e)
+                    stage_timings_ms["execution_ms"] = (time.perf_counter() - t_exec) * 1000
 
-                if execution_record is not None and execution_record.status in ("filled", "partial"):
-                    direction = 1 if execution_record.side == "BUY" else -1
-                    labeling_cfg = pipeline.config.get("labeling", {})
-                    regime_key = state.regime_state.primary_regime.name
-                    overrides = labeling_cfg.get("regime_specific_barriers", {}).get(regime_key, {})
-                    k_tp = overrides.get("k_tp", labeling_cfg.get("k_tp", 1.5))
-                    k_sl = overrides.get("k_sl", labeling_cfg.get("k_sl", 1.0))
-                    tp_pct, sl_pct = compute_barrier_pcts(barrier_volatility_pct(state.feature_vector), k_tp, k_sl)
+                    if execution_record is not None and execution_record.status in ("filled", "partial"):
+                        direction = 1 if execution_record.side == "BUY" else -1
+                        labeling_cfg = pipeline.config.get("labeling", {})
+                        regime_key = state.regime_state.primary_regime.name
+                        overrides = labeling_cfg.get("regime_specific_barriers", {}).get(regime_key, {})
+                        k_tp = overrides.get("k_tp", labeling_cfg.get("k_tp", 1.5))
+                        k_sl = overrides.get("k_sl", labeling_cfg.get("k_sl", 1.0))
+                        tp_pct, sl_pct = compute_barrier_pcts(barrier_volatility_pct(state.feature_vector), k_tp, k_sl)
 
-                    # Record trade for rate limiting
-                    risk_layer.record_trade(state.timestamp)
+                        # Record trade for rate limiting
+                        risk_layer.record_trade(state.timestamp)
 
-                    trade_id = record_trade_entry(
-                        state.timestamp, execution_record.fill_price, state.router_decision.selected_expert,
-                        state.regime_state.primary_regime.value, direction, execution_record.filled_size,
-                        state.router_decision.selection_confidence, risk_decision.risk_score, mode,
-                    )
-                    open_position = OpenPosition(
-                        trade_id=trade_id, entry_timestamp=state.timestamp, entry_price=execution_record.fill_price,
-                        direction=direction, size_usdt=execution_record.filled_size,
-                        take_profit_pct=tp_pct, stop_loss_pct=sl_pct,
-                        max_holding_bars=labeling_cfg.get("max_holding_bars", 5),
-                        fees_paid=execution_record.filled_size * (execution_record.fees_pct / 100),
-                    )
-                    n_trades += 1
-                    logger.info(f"[{state.timestamp}] ENTRY {execution_record.side} via {state.router_decision.selected_expert} "
-                                f"size={execution_record.filled_size:.2f} price={execution_record.fill_price:.2f}")
+                        trade_id = record_trade_entry(
+                            state.timestamp, execution_record.fill_price, state.router_decision.selected_expert,
+                            state.regime_state.primary_regime.value, direction, execution_record.filled_size,
+                            state.router_decision.selection_confidence, risk_decision.risk_score, mode,
+                        )
+                        open_position = OpenPosition(
+                            trade_id=trade_id, entry_timestamp=state.timestamp, entry_price=execution_record.fill_price,
+                            direction=direction, size_usdt=execution_record.filled_size,
+                            take_profit_pct=tp_pct, stop_loss_pct=sl_pct,
+                            max_holding_bars=labeling_cfg.get("max_holding_bars", 5),
+                            fees_paid=execution_record.filled_size * (execution_record.fees_pct / 100),
+                            expert=state.router_decision.selected_expert,
+                            regime=state.regime_state.primary_regime.value,
+                            selection_confidence=state.router_decision.selection_confidence,
+                            risk_score=risk_decision.risk_score,
+                        )
+                        n_trades += 1
+                        logger.info(f"[{state.timestamp}] ENTRY {execution_record.side} via {state.router_decision.selected_expert} "
+                                    f"size={execution_record.filled_size:.2f} price={execution_record.fill_price:.2f}")
 
-                state = replace(state, execution_record=execution_record)
+                    state = replace(state, execution_record=execution_record)
+
+        # Decision trace + §8 record -- written AFTER this bar's risk
+        # and execution results exist, so `executed` and `risk_layer`
+        # are classified from THIS bar instead of being absent.
+        # Build decision trace stages from pipeline output
+        stage_timings_ms.update(pipeline.last_bar_timings)
+        stages: List[StageResult] = build_trace_stages(state, stage_timings_ms)
+
+        # Determine terminal stage and reason. The classifier lives in
+        # src/diagnostics/decision_trace.py so the runtime and the GUI
+        # can never disagree about why a bar stopped where it did.
+        terminal_stage, terminal_reason = classify_terminal_stage(
+            state.opportunity_score, state.router_decision,
+            state.risk_decision, state.execution_record,
+            position_open=position_is_open,
+            execution_failed=execution_failed,
+            execution_error=execution_error or None,
+        )
+
+        trace_writer.append(DecisionTrace(
+            timestamp=state.timestamp, symbol=state.symbol,
+            stages=stages, terminal_stage=terminal_stage, terminal_reason=terminal_reason,
+            total_duration_ms=decision_latency_ms,
+            stage_timings_ms=stage_timings_ms,
+        ))
+        log_trade_decision({**decision_record_from_state(state),
+                            "terminal_stage": terminal_stage, "terminal_reason": terminal_reason})
 
         state = replace(state, realized_pnl=realized_pnl_this_bar)
         risk_layer.advance_bar()
@@ -420,100 +340,16 @@ def run_live_loop(pipeline: TradingPipeline, risk_layer: RiskLayer, execution_en
 
             risk_layer.store.heartbeat()
 
-            # Build decision trace stages (same as run_historical)
-            stages: List[StageResult] = []
-
-            # Stage: expert layer
-            expert_outputs = state.expert_outputs
-            if expert_outputs and expert_outputs.all():
-                candidates = [o for o in expert_outputs.all() if o.action != ExpertAction.NO_TRADE]
-                if candidates:
-                    stages.append(StageResult(
-                        stage_name="expert_layer", passed=True,
-                        detail=f"{len(candidates)} candidate(s): {', '.join(c.expert_name for c in candidates)}",
-                        values={o.expert_name: o.confidence for o in candidates},
-                    ))
-                else:
-                    stages.append(StageResult(
-                        stage_name="expert_layer", passed=False,
-                        detail="All experts returned NO_TRADE",
-                        values={},
-                    ))
-            else:
-                stages.append(StageResult(
-                    stage_name="expert_layer", passed=False,
-                    detail="No expert outputs",
-                    values={},
-                ))
-
-            # Stage: opportunity filter
-            opp_score = state.opportunity_score
-            if opp_score:
-                stages.append(StageResult(
-                    stage_name="opportunity_filter", passed=opp_score.tradable,
-                    detail=" ".join(opp_score.failed_rules) if opp_score.failed_rules else "passed",
-                    values={"tradable_probability": opp_score.tradable_probability,
-                            "environment_quality": opp_score.environment_quality},
-                ))
-
-            # Stage: router
-            router_decision = state.router_decision
-            if router_decision:
-                stages.append(StageResult(
-                    stage_name="router", passed=router_decision.selected_expert != "no_trade",
-                    detail=router_decision.reasoning or "",
-                    values={"selection_confidence": router_decision.selection_confidence,
-                            "no_trade_probability": router_decision.no_trade_probability},
-                ))
-
-            # Stage: risk layer
-            risk_decision = state.risk_decision
-            if risk_decision:
-                stages.append(StageResult(
-                    stage_name="risk_layer", passed=risk_decision.approved,
-                    detail=risk_decision.rejection_reason or "",
-                    values={"risk_score": risk_decision.risk_score,
-                            "size_reduction_pct": risk_decision.size_reduction_pct},
-                ))
-
-            # Stage: execution
-            exec_record = state.execution_record
-            if exec_record:
-                stages.append(StageResult(
-                    stage_name="execution", passed=exec_record.status in ("filled", "partial"),
-                    detail=f"status={exec_record.status}",
-                    values={"fill_price": exec_record.fill_price, "slippage_pct": exec_record.slippage_pct},
-                ))
-
-            # Determine terminal stage and reason
-            if exec_record and exec_record.status in ("filled", "partial"):
-                terminal_stage = "executed"
-                terminal_reason = f"filled via {state.router_decision.selected_expert if state.router_decision else 'unknown'}"
-            elif risk_decision and not risk_decision.approved:
-                terminal_stage = "risk_layer"
-                terminal_reason = risk_decision.rejection_reason or "risk rejection"
-            elif opp_score and not opp_score.tradable:
-                # Filter veto must be classified BEFORE the router: when the
-                # filter rejects, Router.decide() itself returns no_trade with
-                # reasoning "opportunity_filter_rejected", so checking the
-                # router first mislabels every filter veto as a router decline.
-                terminal_stage = "opportunity_filter"
-                terminal_reason = " | ".join(opp_score.failed_rules) if opp_score.failed_rules else "filter veto"
-            elif router_decision and router_decision.selected_expert == "no_trade":
-                terminal_stage = "router_no_trade"
-                terminal_reason = router_decision.reasoning or "router declined"
-            else:
-                terminal_stage = "no_expert_candidate"
-                terminal_reason = "no expert candidate"
-
-            trace_writer.append(DecisionTrace(
-                timestamp=state.timestamp, symbol=state.symbol,
-                stages=stages, terminal_stage=terminal_stage, terminal_reason=terminal_reason,
-                total_duration_ms=decision_latency_ms,
-                stage_timings_ms=pipeline.last_bar_timings,
-            ))
-            log_trade_decision({**decision_record_from_state(state),
-                                "terminal_stage": terminal_stage, "terminal_reason": terminal_reason})
+            # Per-bar risk / execution results. The pipeline returns a fresh
+            # SystemState for every bar, so `state` can never carry the
+            # previous bar's outcome; these locals hold this bar's results
+            # and are reset so a bar that never reaches the risk layer
+            # cannot report the previous bar's.
+            risk_decision = None
+            execution_record = None
+            execution_failed = False
+            execution_error = ""
+            stage_timings_ms: Dict[str, float] = {}
 
             realized_pnl_this_bar = 0.0
 
@@ -536,63 +372,103 @@ def run_live_loop(pipeline: TradingPipeline, risk_layer: RiskLayer, execution_en
                     logger.info(f"[{state.timestamp}] EXIT {exit_info['exit_reason']} pnl={exit_info['realized_pnl_pct']:.3f}% equity={equity:.2f}")
                     open_position = None
 
-            # 2. Enforce max_concurrent_positions from config
+            # 2. Enforce max_concurrent_positions from config. When a position
+            # is already open the bar is still processed (traced, archived) --
+            # it simply cannot open a second one.
             max_concurrent = risk_layer.breaker_cfg.get("max_concurrent_positions", 1)
-            if max_concurrent == 1 and open_position is not None:
-                risk_layer.advance_bar()
-                time.sleep(poll_seconds)
-                continue
+            position_is_open = max_concurrent == 1 and open_position is not None
 
-            if open_position is None and state.router_decision is not None:
-                risk_decision = risk_layer.evaluate(
-                    state.router_decision, state.expert_outputs, state.regime_state,
-                    state.zone_map, state.feature_vector, state.market_snapshot, equity,
-                )
-                state = replace(state, risk_decision=risk_decision)
+            if not position_is_open:
+                if open_position is None and state.router_decision is not None:
+                    t_risk = time.perf_counter()
+                    risk_decision = risk_layer.evaluate(
+                        state.router_decision, state.expert_outputs, state.regime_state,
+                        state.zone_map, state.feature_vector, state.market_snapshot, equity,
+                    )
+                    stage_timings_ms["risk_layer_ms"] = (time.perf_counter() - t_risk) * 1000
+                    state = replace(state, risk_decision=risk_decision)
 
-                if risk_decision.approved:
-                    expert_output = state.expert_outputs.get_by_name(state.router_decision.selected_expert)
-                    try:
-                        execution_record = execution_engine.place_order(
-                            risk_decision, state.router_decision, expert_output, state.market_snapshot,
-                            fv=state.feature_vector,
-                        )
-                        risk_layer.store.record_execution_result(success=True)
-                    except Exception as e:
-                        logger.error(f"Execution failed: {e}")
-                        risk_layer.store.record_execution_result(success=False)
-                        if risk_layer.store.consecutive_execution_errors() >= risk_layer.breaker_cfg.get("consecutive_execution_errors_halt", 3):
-                            risk_layer.store.trip("consecutive_execution_errors", "3 consecutive execution failures")
-                        execution_record = None
+                    if risk_decision.approved:
+                        expert_output = state.expert_outputs.get_by_name(state.router_decision.selected_expert)
+                        t_exec = time.perf_counter()
+                        try:
+                            execution_record = execution_engine.place_order(
+                                risk_decision, state.router_decision, expert_output, state.market_snapshot,
+                                fv=state.feature_vector,
+                            )
+                            risk_layer.store.record_execution_result(success=True)
+                        except Exception as e:
+                            logger.error(f"Execution failed: {e}")
+                            risk_layer.store.record_execution_result(success=False)
+                            if risk_layer.store.consecutive_execution_errors() >= risk_layer.breaker_cfg.get("consecutive_execution_errors_halt", 3):
+                                risk_layer.store.trip("consecutive_execution_errors", "3 consecutive execution failures")
+                            execution_record = None
+                            # Report the bar as a failed execution rather
+                            # than as "no expert candidate": the expert
+                            # and the risk layer both said yes, and it
+                            # was the order placement that broke.
+                            execution_failed = True
+                            execution_error = str(e)
+                        stage_timings_ms["execution_ms"] = (time.perf_counter() - t_exec) * 1000
 
-                    if execution_record is not None and execution_record.status in ("filled", "partial"):
-                        direction = 1 if execution_record.side == "BUY" else -1
-                        labeling_cfg = pipeline.config.get("labeling", {})
-                        regime_key = state.regime_state.primary_regime.name
-                        overrides = labeling_cfg.get("regime_specific_barriers", {}).get(regime_key, {})
-                        k_tp = overrides.get("k_tp", labeling_cfg.get("k_tp", 1.5))
-                        k_sl = overrides.get("k_sl", labeling_cfg.get("k_sl", 1.0))
-                        tp_pct, sl_pct = compute_barrier_pcts(barrier_volatility_pct(state.feature_vector), k_tp, k_sl)
+                        if execution_record is not None and execution_record.status in ("filled", "partial"):
+                            direction = 1 if execution_record.side == "BUY" else -1
+                            labeling_cfg = pipeline.config.get("labeling", {})
+                            regime_key = state.regime_state.primary_regime.name
+                            overrides = labeling_cfg.get("regime_specific_barriers", {}).get(regime_key, {})
+                            k_tp = overrides.get("k_tp", labeling_cfg.get("k_tp", 1.5))
+                            k_sl = overrides.get("k_sl", labeling_cfg.get("k_sl", 1.0))
+                            tp_pct, sl_pct = compute_barrier_pcts(barrier_volatility_pct(state.feature_vector), k_tp, k_sl)
 
-                        risk_layer.record_trade(state.timestamp)
+                            risk_layer.record_trade(state.timestamp)
 
-                        trade_id = record_trade_entry(
-                            state.timestamp, execution_record.fill_price, state.router_decision.selected_expert,
-                            state.regime_state.primary_regime.value, direction, execution_record.filled_size,
-                            state.router_decision.selection_confidence, risk_decision.risk_score, "live",
-                        )
-                        open_position = OpenPosition(
-                            trade_id=trade_id, entry_timestamp=state.timestamp, entry_price=execution_record.fill_price,
-                            direction=direction, size_usdt=execution_record.filled_size,
-                            take_profit_pct=tp_pct, stop_loss_pct=sl_pct,
-                            max_holding_bars=labeling_cfg.get("max_holding_bars", 5),
-                            fees_paid=execution_record.filled_size * (execution_record.fees_pct / 100),
-                        )
-                        n_trades += 1
-                        logger.info(f"[{state.timestamp}] ENTRY {execution_record.side} via {state.router_decision.selected_expert} "
-                                    f"size={execution_record.filled_size:.2f} price={execution_record.fill_price:.2f}")
+                            trade_id = record_trade_entry(
+                                state.timestamp, execution_record.fill_price, state.router_decision.selected_expert,
+                                state.regime_state.primary_regime.value, direction, execution_record.filled_size,
+                                state.router_decision.selection_confidence, risk_decision.risk_score, "live",
+                            )
+                            open_position = OpenPosition(
+                                trade_id=trade_id, entry_timestamp=state.timestamp, entry_price=execution_record.fill_price,
+                                direction=direction, size_usdt=execution_record.filled_size,
+                                take_profit_pct=tp_pct, stop_loss_pct=sl_pct,
+                                max_holding_bars=labeling_cfg.get("max_holding_bars", 5),
+                                fees_paid=execution_record.filled_size * (execution_record.fees_pct / 100),
+                                expert=state.router_decision.selected_expert,
+                                regime=state.regime_state.primary_regime.value,
+                                selection_confidence=state.router_decision.selection_confidence,
+                                risk_score=risk_decision.risk_score,
+                            )
+                            n_trades += 1
+                            logger.info(f"[{state.timestamp}] ENTRY {execution_record.side} via {state.router_decision.selected_expert} "
+                                        f"size={execution_record.filled_size:.2f} price={execution_record.fill_price:.2f}")
 
-                    state = replace(state, execution_record=execution_record)
+                        state = replace(state, execution_record=execution_record)
+
+            # Decision trace + §8 record -- written AFTER this bar's risk
+            # and execution results exist, so `executed` and `risk_layer`
+            # are classified from THIS bar instead of being absent.
+            # Build decision trace stages (same as run_historical)
+            stage_timings_ms.update(pipeline.last_bar_timings)
+            stages: List[StageResult] = build_trace_stages(state, stage_timings_ms)
+
+            # Determine terminal stage and reason -- shared classifier, see
+            # src/diagnostics/decision_trace.py.
+            terminal_stage, terminal_reason = classify_terminal_stage(
+                state.opportunity_score, state.router_decision,
+                state.risk_decision, state.execution_record,
+                position_open=position_is_open,
+                execution_failed=execution_failed,
+                execution_error=execution_error or None,
+            )
+
+            trace_writer.append(DecisionTrace(
+                timestamp=state.timestamp, symbol=state.symbol,
+                stages=stages, terminal_stage=terminal_stage, terminal_reason=terminal_reason,
+                total_duration_ms=decision_latency_ms,
+                stage_timings_ms=stage_timings_ms,
+            ))
+            log_trade_decision({**decision_record_from_state(state),
+                                "terminal_stage": terminal_stage, "terminal_reason": terminal_reason})
 
             state = replace(state, realized_pnl=realized_pnl_this_bar)
             risk_layer.advance_bar()
@@ -636,10 +512,7 @@ def main():
         if not args.input:
             raise SystemExit("--mode historical requires --input <ohlcv file>")
         input_path = Path(args.input)
-        df_ohlcv = pd.read_csv(input_path) if input_path.suffix == ".csv" else pd.read_parquet(input_path)
-        if "timestamp" in df_ohlcv.columns:
-            df_ohlcv["timestamp"] = pd.to_datetime(df_ohlcv["timestamp"])
-        df_ohlcv = df_ohlcv.sort_values("timestamp").reset_index(drop=True)
+        df_ohlcv = load_ohlcv_for_run(input_path)
 
         run_historical(pipeline, risk_layer, execution_engine, df_ohlcv, args.env, fee_pct,
                         args.initial_equity, max_bars=args.max_bars)

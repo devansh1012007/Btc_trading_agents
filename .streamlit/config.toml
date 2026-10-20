@@ -1,0 +1,26 @@
+# Streamlit server configuration for this repository.
+# ---------------------------------------------------------------------------
+# Ports are deliberately moved OFF Streamlit's default 8501 and are
+# overridable, so that several checkouts (or several agents working on
+# this host at the same time) can each run a Streamlit app without
+# colliding on a port.
+#
+#   make demo                        -> http://127.0.0.1:8571
+#   make demo STREAMLIT_PORT=8600    -> http://127.0.0.1:8600
+#
+# The server binds to 127.0.0.1 only: this is a local research tool and
+# must not be exposed on a shared host's network interfaces.
+# ---------------------------------------------------------------------------
+
+[server]
+port = 8571
+address = "127.0.0.1"
+headless = true
+fileWatcherType = "auto"
+
+[browser]
+gatherUsageStats = false
+serverAddress = "127.0.0.1"
+
+[logger]
+level = "info"

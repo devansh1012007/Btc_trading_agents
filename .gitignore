@@ -3,6 +3,13 @@ data/raw/
 data/processed/
 data/logs/
 data/models/
+# Generated reports: the directory also holds a few reports that are
+# tracked on purpose, so ignore the generated ones by name.
+data/reports/latency_*.json
+data/reports/latency_*.md
+data/reports/backtest_*.json
+data/reports/backtest_*.md
+data/reports/benchmark_*/
 
 # Python
 __pycache__/

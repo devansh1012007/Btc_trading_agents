@@ -58,6 +58,34 @@ demo = [
     "streamlit>=1.30.0",
     "matplotlib>=3.7.0",
 ]
+# Trade Map GUI (charts). Kept OUT of the core dependencies on purpose:
+# the Docker image installs requirements.txt, and `import src.gui` must
+# keep working there without plotly. `src/gui/__init__.py` therefore
+# imports no charting library at module scope.
+viz = [
+    "plotly>=5.0.0",
+]
+
+# ---------------------------------------------------------------------------
+# setuptools
+# ---------------------------------------------------------------------------
+# Without this, setuptools' flat-layout auto-discovery installs the
+# CONTENTS of src/ as top-level packages (`gui`, `state`, `pipeline`, ...)
+# instead of `src` itself -- so `import src.gui` fails after
+# `pip install -e .` and `from ..diagnostics...` climbs above the
+# installed package root.
+[tool.setuptools]
+# No top-level single-file modules: flat-layout auto-discovery would
+# otherwise install `__init__` and `pipeline` at the wheel root, where
+# they shadow the real `src` package and the repo's `config/` directory.
+py-modules = []
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.yaml", "*.yml", "*.json"]
 
 # ---------------------------------------------------------------------------
 # pytest

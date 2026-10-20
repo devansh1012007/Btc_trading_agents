@@ -97,10 +97,11 @@ def decision_record_from_state(state: SystemState) -> dict[str, Any]:
 
     expert_name = router.selected_expert if router and router.selected_expert else None
 
-    if exec_record and exec_record.side == "BUY":
-        decision = "LONG"
-    elif exec_record and exec_record.side == "SELL":
-        decision = "SHORT"
+    # A trade only happened if the order FILLED. A rejected or pending
+    # order is not a trade, and reporting it as one would put a phantom
+    # entry marker on every chart that reads this feed.
+    if exec_record is not None and exec_record.status in ("filled", "partial"):
+        decision = "LONG" if exec_record.side == "BUY" else "SHORT"
     else:
         decision = "NO_TRADE"
 
@@ -108,10 +109,12 @@ def decision_record_from_state(state: SystemState) -> dict[str, Any]:
         "symbol": state.symbol,
         "timestamp": state.timestamp,
         "regime": regime_name,
+        "regime_confidence": regime_state.regime_confidence if regime_state else None,
         "expert": expert_name,
         "opportunity_score": opp.tradable_probability if opp else None,
         "router_confidence": router.selection_confidence if router else None,
         "risk_score": risk.risk_score if risk else None,
+        "risk_approved": risk.approved if risk else None,
         "decision": decision,
         "equity": None,  # filled by caller if known
     }

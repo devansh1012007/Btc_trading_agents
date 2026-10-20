@@ -19,6 +19,13 @@ PYTEST_V := .venv/bin/python -m pytest
 
 BENCH_DATE := $(shell date +%Y_%m_%d)
 
+# --- Streamlit app ports ---------------------------------------------------
+# Deliberately NOT Streamlit's default 8501: this host is shared, and a
+# default-port collision with another checkout (or another agent) is the
+# most common way a dev server dies on startup. Override per invocation:
+#   make demo STREAMLIT_PORT=8600
+STREAMLIT_PORT ?= 8571
+
 .PHONY: help
 help:
 	@echo "Available targets:"
@@ -38,7 +45,7 @@ help:
 	@echo "  make dashboard-headless One-shot headless dashboard render"
 	@echo "  make latency           Software performance benchmark (latency/RAM)"
 	@echo "  make figures           Generate docs/images figures (synthetic)"
-	@echo "  make demo              Launch the Streamlit decision demo"
+	@echo "  make demo              Launch the Streamlit decision demo (port $(STREAMLIT_PORT))"
 	@echo "  make build-image       Build the Docker image"
 	@echo "  make install-dev       Create venv + install runtime and dev deps"
 	@echo "  make clean             Remove caches and build artifacts"
@@ -122,13 +129,14 @@ dashboard-headless:
 	$(PYTHON) $(SCRIPTS_DIR)/dashboard.py --once
 
 latency:
-	$(PYTHON) $(SCRIPTS_DIR)/benchmark_latency.py --synthetic 300
+	$(PYTHON) $(SCRIPTS_DIR)/benchmark_latency.py --bars 300
 
 figures:
 	$(PYTHON) $(SCRIPTS_DIR)/generate_figures.py --synthetic 900 --relax-liquidity
 
 demo:
-	streamlit run $(SCRIPTS_DIR)/demo_app.py
+	streamlit run $(SCRIPTS_DIR)/demo_app.py \
+		--server.port=$(STREAMLIT_PORT) --server.address=127.0.0.1
 
 # ---------------------------------------------------------------------------
 # Docker

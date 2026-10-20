@@ -13,7 +13,15 @@ from abc import ABC, abstractmethod
 from typing import Optional, Tuple
 
 from ..liquidity.types import LiquidityEstimate
-from ..state.contracts import ExecutionRecord, ExpertAction, ExpertOutput, MarketSnapshot, RiskDecision, RouterDecision
+from ..state.contracts import (
+    ExecutionRecord,
+    ExpertAction,
+    ExpertOutput,
+    FeatureVector,
+    MarketSnapshot,
+    RiskDecision,
+    RouterDecision,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +75,7 @@ class ExecutionBackend(ABC):
     def place_order(
         self, risk_decision: RiskDecision, router_decision: RouterDecision,
         expert_output: ExpertOutput, market: MarketSnapshot,
+        fv: Optional[FeatureVector] = None,
     ) -> ExecutionRecord:
         raise NotImplementedError
 
@@ -84,12 +93,19 @@ class ExecutionEngine:
     def place_order(
         self, risk_decision: RiskDecision, router_decision: RouterDecision,
         expert_output: Optional[ExpertOutput], market: MarketSnapshot,
+        fv: Optional[FeatureVector] = None,
     ) -> Optional[ExecutionRecord]:
+        """Place an order through the active backend.
+
+        ``fv`` is the feature vector for the bar. Only the paper_live
+        backend uses it (to sample paired synthetic/real liquidity);
+        the other backends ignore it, so it stays optional.
+        """
         if not risk_decision.approved:
             return None
         if expert_output is None or expert_output.action == ExpertAction.NO_TRADE:
             return None
-        return self.backend.place_order(risk_decision, router_decision, expert_output, market)
+        return self.backend.place_order(risk_decision, router_decision, expert_output, market, fv=fv)
 
     def get_liquidity(self, symbol: str, market: MarketSnapshot) -> LiquidityEstimate:
         return self.backend.get_liquidity(symbol, market)

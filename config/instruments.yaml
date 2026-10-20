@@ -1,0 +1,104 @@
+###############################################################################
+# INSTRUMENT REGISTRY
+#
+# Contract metadata for every instrument the Trade Map GUI can display.
+# The GUI reads this to label prices, size positions and (for options)
+# draw the strike and expiry.
+#
+# Keys per entry:
+#   asset_class        spot | perp | future | option | equity | fx
+#   underlying         ticker the instrument settles against (derivatives)
+#   option_type        call | put            (options only)
+#   strike             strike price         (options only)
+#   expiry             expiry date, ISO-8601 (dated derivatives only)
+#   multiplier         contract multiplier  (1 for spot, 100 for US equity
+#                      options, contract size for futures)
+#   tick_size          minimum price increment
+#   lot_size           minimum tradeable quantity in base units
+#   currency           quote currency
+#   display_precision  decimal places for price labels
+#   name               human-readable label (optional)
+#
+# A symbol that is not listed here still works: the GUI falls back to a
+# generic spot spec. A malformed entry is skipped with a logged warning
+# rather than taking the page down.
+###############################################################################
+
+instruments:
+
+  BTC/USDT:
+    asset_class: spot
+    currency: USDT
+    display_precision: 2
+    name: BTC/USDT
+
+  ETH/USDT:
+    asset_class: spot
+    currency: USDT
+    display_precision: 2
+
+  SOL/USDT:
+    asset_class: spot
+    currency: USDT
+    display_precision: 3
+
+  # --- Perpetual futures -------------------------------------------------
+  BTC/USDT:USDT:
+    asset_class: perp
+    underlying: BTC/USDT
+    multiplier: 1
+    currency: USDT
+    display_precision: 2
+
+  ETH/USDT:USDT:
+    asset_class: perp
+    underlying: ETH/USDT
+    multiplier: 1
+    currency: USDT
+    display_precision: 2
+
+  # --- Listed options -----------------------------------------------------
+  # Strikes and expiries are examples; replace them with the live chain
+  # (or point the GUI at a chain file) before trading them.
+  BTC-261220-75000-C:
+    asset_class: option
+    underlying: BTC/USDT
+    option_type: call
+    strike: 75000
+    expiry: "2026-12-20"
+    multiplier: 1
+    tick_size: 0.1
+    currency: USDT
+    display_precision: 2
+    name: BTC 20-Dec-2026 75,000 C
+
+  BTC-261220-75000-P:
+    asset_class: option
+    underlying: BTC/USDT
+    option_type: put
+    strike: 75000
+    expiry: "2026-12-20"
+    multiplier: 1
+    tick_size: 0.1
+    currency: USDT
+    display_precision: 2
+    name: BTC 20-Dec-2026 75,000 P
+
+  # --- Equities (for a non-crypto deployment) ---------------------------
+  AAPL:
+    asset_class: equity
+    currency: USD
+    display_precision: 2
+
+  # --- Equity options: 100 shares per contract ---------------------------
+  AAPL-261218-00200000-C:
+    asset_class: option
+    underlying: AAPL
+    option_type: call
+    strike: 200
+    expiry: "2026-12-18"
+    multiplier: 100
+    tick_size: 0.01
+    currency: USD
+    display_precision: 2
+    name: AAPL 18-Dec-2026 200 C
