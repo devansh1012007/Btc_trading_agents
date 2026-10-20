@@ -250,6 +250,15 @@ MarketSnapshot → FeatureVector → RegimeState → ZoneMap →
   (`[tool.ruff]`) and `mypy` (`[tool.mypy]`; `src/state` + `src/reporting`
   are strict). `make check` runs lint + typecheck + tests.
 
+## The Trade Map GUI (living plan)
+
+`docs/TRADE_MAP_PLAN.md` is the **living plan** for the Trade Map GUI:
+every phase, its tasks, its acceptance criteria and its status. Update
+it **in the same commit as the phase's code** — the plan and the code
+must never disagree. Phase 1 (the data/core layer) is done; Phase 1.5
+(hardening) is next, then the chart layer, the app, the docs and the
+final review.
+
 ## Deep-dive documentation
 
 For implementation-level details on how every subsystem works — design decisions, failure paths, contracts, and assumptions — read the files in `docs/explain/`:

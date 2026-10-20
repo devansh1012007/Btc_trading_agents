@@ -163,7 +163,7 @@ past; embargo gaps enforced; labels see only their window.
 src/                       pipeline, state contracts, layers/, experts/,
                            labeling/, backtest/, execution/, liquidity/,
                            registry/, feedback/, monitoring/, diagnostics/,
-                           config/, connectors/, alerting/
+                           config/, connectors/, alerting/, gui/ (Trade Map GUI)
 scripts/                   run.py (deploy), full_stack_walk_forward_backtest.py,
                            benchmark_latency.py, replay_trade.py, generate_figures.py,
                            train_*.py, retrain_all.py, approve/rollback_model.py,
@@ -171,7 +171,8 @@ scripts/                   run.py (deploy), full_stack_walk_forward_backtest.py,
 config/                    settings.base.yaml + paper/live overlays
 tests/                     unit / integration / e2e
 docs/                      design-decisions/ (ADRs), explain/ (deep dives),
-                           leakage-prevention.md, research-report.md, limitations.md
+                           leakage-prevention.md, research-report.md, limitations.md,
+                           TRADE_MAP_PLAN.md (the Trade Map GUI phase plan)
 data/                      gitignored: raw/, models/, logs/, reports/, registry.db
 ```
 
@@ -186,6 +187,7 @@ paper-trading statistics are a prerequisite (tracked in `TODO.md`).
 ## Roadmap
 
 - [x] Phases 1–5: perception, decision, risk/execution, diagnostics (see `docs/PHASE*_COMPLETE.md`)
+- [ ] Trade Map GUI — see the living plan in [`docs/TRADE_MAP_PLAN.md`](docs/TRADE_MAP_PLAN.md)
 - [ ] Real-data benchmark + ablation publication (`TODO.md`)
 - [ ] Multi-week paper-trading campaign → failure-analysis report
 - [ ] Contextual bandit router (then PPO only if bandits are beaten)
