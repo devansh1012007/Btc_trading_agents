@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT))
 from src.diagnostics import dashboard_data as dd  # noqa: E402
 from src.diagnostics.decision_trace import (  # noqa: E402
     STAGE_LABELS,
+    STAGE_STYLES,
     TERMINAL_STAGES,
     classify_terminal_stage,
 )
@@ -34,7 +35,6 @@ from src.gui.instruments import load_registry  # noqa: E402
 from src.gui.models import (  # noqa: E402
     BAR_COLUMNS,
     DECISION_COLUMNS,
-    TRADE_COLUMNS,
     ZONE_COLUMNS,
     empty_frame,
 )
@@ -44,7 +44,12 @@ from src.gui.timeframes import (  # noqa: E402
     resample_ohlcv,
     to_epoch_seconds,
 )
-from src.state.contracts import ExecutionRecord, RiskDecision  # noqa: E402
+from src.state.contracts import (  # noqa: E402
+    ExecutionRecord,
+    OpportunityScore,
+    RiskDecision,
+    RouterDecision,
+)
 from src.utils.logging_setup import decision_record_from_state  # noqa: E402
 
 pytestmark = [pytest.mark.unit]
@@ -260,13 +265,6 @@ def test_empty_zone_frame_types_its_numeric_columns():
     assert empty["zone_strength_at_event"].dtype.kind == "f"
 
 
-def test_an_empty_trade_frame_and_a_populated_one_concat_cleanly():
-    empty = empty_frame(TRADE_COLUMNS)
-    populated = empty.copy()
-    populated.loc[0] = populated.iloc[0] if len(populated) else None
-    assert empty["entry_timestamp"].dtype == empty_frame(TRADE_COLUMNS)["entry_timestamp"].dtype
-
-
 # ---------------------------------------------------------------------------
 # Symbol matching: a perpetual must not masquerade as its spot
 # ---------------------------------------------------------------------------
@@ -409,30 +407,65 @@ def test_the_label_map_covers_every_terminal_stage_exactly():
 
 
 def test_the_style_map_covers_every_terminal_stage_exactly():
-    assert set(dd.STAGE_STYLES) == set(TERMINAL_STAGES)
+    assert set(STAGE_STYLES) == set(TERMINAL_STAGES)
+
+
+def test_the_tui_re_exports_the_one_style_map():
+    """The style map is defined next to the vocabulary; the TUI module
+    re-exports the SAME object, it does not carry a second copy."""
+    assert dd.STAGE_STYLES is STAGE_STYLES
+
+
+def _every_classifier_scenario():
+    """One input per branch of the classifier, built from real contracts."""
+    opp_ok = OpportunityScore(
+        timestamp=1, symbol="BTC/USDT", tradable=True, tradable_probability=0.9,
+        environment_quality=0.9, opportunity_strength=0.9, failed_rules=[],
+    )
+    opp_veto = OpportunityScore(
+        timestamp=1, symbol="BTC/USDT", tradable=False, tradable_probability=0.1,
+        environment_quality=0.1, opportunity_strength=0.1, failed_rules=["spread"],
+    )
+
+    def router(selected, reasoning=""):
+        return RouterDecision(
+            timestamp=1, symbol="BTC/USDT", selected_expert=selected,
+            selection_confidence=0.7, no_trade_probability=0.1, reasoning=reasoning,
+        )
+
+    yield {"execution_failed": True}
+    yield {"execution_failed": True, "execution_error": "boom"}
+    yield {"execution_record": _execution_record("BUY", "filled"), "router_decision": router("trend_expert")}
+    yield {"execution_record": _execution_record("BUY", "rejected")}
+    yield {"risk_decision": _risk_decision(False, "circuit_breaker_active:max_drawdown")}
+    yield {"risk_decision": _risk_decision(False, "manual_kill_switch_active")}
+    yield {"risk_decision": _risk_decision(False, "selected_expert_has_no_candidate")}
+    yield {"risk_decision": _risk_decision(False, "invalidation_distance_too_tight(0.01)")}
+    yield {"risk_decision": _risk_decision(False, "no_trade_selected"), "router_decision": router("no_trade")}
+    yield {"opportunity_score": opp_veto}
+    yield {"router_decision": router("no_trade", "opportunity_filter_rejected")}
+    yield {"router_decision": router("no_trade", "no_expert_cleared_confidence_floor")}
+    yield {"router_decision": router("no_trade", "model preferred no trade")}
+    yield {"opportunity_score": opp_ok, "router_decision": router("trend_expert"), "position_open": True}
+    yield {"risk_decision": _risk_decision(False, "no_trade_selected")}
+    yield {}
 
 
 def test_the_classifier_only_ever_returns_a_known_stage():
     """Every branch of the classifier must return a stage from the
-    canonical list -- a typo would silently become a new vocabulary."""
-    import ast
-    import inspect
+    canonical list -- a typo would silently become a new vocabulary.
 
-    source = inspect.getsource(classify_terminal_stage)
-    tree = ast.parse(textwrap_dedent(source))
-    returned = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple):
-            first = node.value.elts[0]
-            if isinstance(first, ast.Constant) and isinstance(first.value, str):
-                returned.add(first.value)
-    assert returned, "no stage literals found in the classifier"
-    assert returned <= set(TERMINAL_STAGES), f"unknown stages: {returned - set(TERMINAL_STAGES)}"
-
-
-def textwrap_dedent(source: str) -> str:
-    import textwrap
-    return textwrap.dedent(source)
+    Behavioural, not structural: it CALLS the classifier on an input for
+    each branch and checks the stage it actually returns."""
+    seen = set()
+    for scenario in _every_classifier_scenario():
+        stage, reason = classify_terminal_stage(**scenario)
+        assert stage in TERMINAL_STAGES, f"{scenario!r} -> unknown stage {stage!r}"
+        assert isinstance(reason, str) and reason
+        seen.add(stage)
+    # The scenarios must actually exercise most of the vocabulary, or the
+    # test would pass vacuously.
+    assert len(seen) >= len(TERMINAL_STAGES) - 1, f"only exercised {sorted(seen)}"
 
 
 # ---------------------------------------------------------------------------

@@ -57,6 +57,21 @@ STAGE_LABELS: Dict[str, str] = {
     "executed": "Executed",
 }
 
+#: Terminal stage -> terminal-console style (a colour name). Lives HERE,
+#: next to the vocabulary and the labels, so "one source of truth" is
+#: literally true: a stage, its label and its style are one fact, and
+#: the GUI never has to import a TUI module to colour a stage.
+STAGE_STYLES: Dict[str, str] = {
+    "executed": "green",
+    "circuit_breaker": "red",
+    "execution_failed": "red",
+    "risk_layer": "yellow",
+    "opportunity_filter": "yellow",
+    "router_no_trade": "cyan",
+    "no_expert_candidate": "white",
+    "position_open": "magenta",
+}
+
 #: Risk-layer rejection reasons that are CONSEQUENCES of an earlier stage
 #: having already declined, rather than independent risk decisions. The
 #: risk layer is consulted for every bar the router produced a decision

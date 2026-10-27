@@ -31,32 +31,12 @@ from src.gui.models import DECISION_COLUMNS, TRADE_COLUMNS  # noqa: E402
 pytestmark = [pytest.mark.unit]
 
 
-def make_journal_db(path: Path) -> None:
-    conn = sqlite3.connect(path)
-    conn.execute(
-        "CREATE TABLE trade_journal ("
-        "trade_id TEXT PRIMARY KEY, entry_timestamp INTEGER, entry_price REAL, "
-        "exit_timestamp INTEGER, exit_price REAL, exit_reason TEXT, expert_used TEXT, "
-        "regime_at_entry TEXT, direction INTEGER, size REAL, realized_pnl_pct REAL, "
-        "realized_pnl_usdt REAL, fees_paid REAL, slippage_realized REAL, "
-        "router_confidence REAL, risk_score_at_entry REAL, mode TEXT)"
-    )
-    conn.execute(
-        "INSERT INTO trade_journal VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        ("t1", 1_700_000_000, 100.0, 1_700_000_060, 101.5, "take_profit",
-         "trend_expert", "trending_up", 1, 250.0, 1.35, 3.4, 0.12, 0.01, 0.7, 0.2, "paper"),
-    )
-    conn.commit()
-    conn.close()
-
-
 # ---------------------------------------------------------------------------
 # trade journal
 # ---------------------------------------------------------------------------
 
-def test_read_trade_journal_normalises_columns(tmp_path):
-    db = tmp_path / "registry.db"
-    make_journal_db(db)
+def test_read_trade_journal_normalises_columns(tmp_path, make_journal_db):
+    db = make_journal_db(tmp_path / "registry.db")
     frame = read_trade_journal(str(db))
     assert len(frame) == 1
     row = frame.iloc[0]

@@ -100,8 +100,16 @@ NUMERIC_ZONE_COLUMNS: List[str] = [
 NUMERIC_EQUITY_COLUMNS: List[str] = ["equity"]
 
 #: Timestamp-like columns that are always present on a valid row, and
-#: are therefore kept as int64 (unix seconds) rather than float64.
-INT_COLUMNS: List[str] = ["timestamp", "entry_timestamp", "bar_index"]
+#: are therefore kept as int64 (unix seconds) rather than float64. A
+#: missing value is a producer bug the READER must resolve (drop or
+#: repair) before normalising: ``normalize_dtypes`` raises rather than
+#: silently losing the row.
+INT_COLUMNS: List[str] = ["timestamp", "entry_timestamp"]
+
+#: Integer columns that may legitimately be missing. Kept as the nullable
+#: ``Int64`` so an absent value stays absent instead of dropping the row
+#: (a zone event without a bar index is still drawable from its time).
+NULLABLE_INT_COLUMNS: List[str] = ["bar_index"]
 
 #: Boolean columns, kept as nullable booleans so that "not reported" and
 #: "reported false" stay distinguishable.
@@ -129,17 +137,22 @@ def coerce_booleans(frame: pd.DataFrame, columns: List[str]) -> pd.DataFrame:
 def cast_int_columns(frame: pd.DataFrame, columns: List[str]) -> pd.DataFrame:
     """Cast always-present timestamp-like columns to int64.
 
-    Rows whose value is missing are dropped rather than silently turned
-    into a bogus epoch second.
+    Never drops a row. A missing value cannot be represented in int64, so
+    it raises: deciding what to do with a row that has no timestamp is the
+    READER's job (``read_trade_journal`` and ``read_decisions_jsonl``
+    already drop them), not a side effect of a dtype cast.
     """
     out = frame.copy()
     for col in columns:
         if col not in out.columns:
             continue
         numeric = pd.to_numeric(out[col], errors="coerce")
-        if numeric.isna().any():
-            out = out.loc[numeric.notna()].copy()
-            numeric = pd.to_numeric(out[col], errors="coerce")
+        missing = int(numeric.isna().sum())
+        if missing:
+            raise ValueError(
+                f"{missing} row(s) have a missing or non-numeric {col!r}; drop or repair "
+                f"them before normalising (normalize_dtypes never drops rows)"
+            )
         out[col] = numeric.astype("int64")
     return out
 
@@ -164,7 +177,10 @@ def normalize_dtypes(frame: pd.DataFrame) -> pd.DataFrame:
             out[col] = pd.to_numeric(out[col], errors="coerce").astype("float64")
     out = coerce_booleans(out, BOOL_COLUMNS)
     out = cast_int_columns(out, INT_COLUMNS)
-    handled = set(INT_COLUMNS) | set(BOOL_COLUMNS)
+    for col in NULLABLE_INT_COLUMNS:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce").astype("Int64")
+    handled = set(INT_COLUMNS) | set(NULLABLE_INT_COLUMNS) | set(BOOL_COLUMNS)
     handled |= set(NUMERIC_BAR_COLUMNS) | set(NUMERIC_TRADE_COLUMNS)
     handled |= set(NUMERIC_DECISION_COLUMNS) | set(NUMERIC_ZONE_COLUMNS)
     handled |= set(NUMERIC_EQUITY_COLUMNS)
@@ -186,6 +202,8 @@ def empty_frame(columns: List[str]) -> pd.DataFrame:
     for col in columns:
         if col in INT_COLUMNS:
             df[col] = pd.Series(dtype="int64")
+        elif col in NULLABLE_INT_COLUMNS:
+            df[col] = pd.Series(dtype="Int64")
         elif col in BOOL_COLUMNS:
             df[col] = pd.Series(dtype="boolean")
         elif col in (
@@ -228,9 +246,21 @@ class SessionBundle:
     states: Dict[int, SystemState] = field(default_factory=dict)
     meta: Dict[str, Any] = field(default_factory=dict)
 
-    # Cached index over ``decisions`` (see ``decision_by_timestamp``).
-    _decision_index: Dict[int, dict] = field(default_factory=dict, init=False, repr=False)
-    _decision_index_key: Any = field(default=None, init=False, repr=False)
+    def __setattr__(self, name: str, value: Any) -> None:
+        # The lookup indexes below are derived from ``decisions`` and
+        # ``bars``. Replacing either frame drops them, so a stale index
+        # can never outlive the frame it was built from (no ``id()``
+        # key, which Python is free to reuse). The frames are treated as
+        # immutable once attached: mutate-in-place is not supported.
+        object.__setattr__(self, name, value)
+        if name in ("decisions", "bars"):
+            self.__dict__.pop("_index_cache", None)
+
+    def _index(self, key: str, build) -> Any:
+        cache = self.__dict__.setdefault("_index_cache", {})
+        if key not in cache:
+            cache[key] = build()
+        return cache[key]
 
     # -- derived views -------------------------------------------------
 
@@ -251,34 +281,36 @@ class SessionBundle:
     def decision_by_timestamp(self) -> Dict[int, dict]:
         """Bar timestamp -> decision row (as a plain dict).
 
-        Cached: the charting layer asks for this once per bar, and
-        rebuilding the whole index on every access made a 20k-bar
-        session quadratic.
+        Built once per ``decisions`` frame: the charting layer asks for
+        this once per bar, and rebuilding the index on every access made
+        a 20k-bar session quadratic.
         """
-        if self.decisions.empty:
-            return {}
-        cache_key = (id(self.decisions), len(self.decisions))
-        if self._decision_index_key != cache_key:
+        def build() -> Dict[int, dict]:
             out: Dict[int, dict] = {}
             for row in self.decisions.to_dict("records"):
                 ts = row.get("timestamp")
                 if ts is None or pd.isna(ts):
                     continue
                 out[int(ts)] = row
-            self._decision_index = out
-            self._decision_index_key = cache_key
-        return self._decision_index
+            return out
+
+        return self._index("decisions", build) if not self.decisions.empty else {}
 
     @property
     def close_by_timestamp(self) -> Dict[int, float]:
-        """Bar timestamp -> close price, for filling in missing prices."""
-        if self.bars.empty:
-            return {}
-        return {
-            int(ts): float(close)
-            for ts, close in zip(self.bars["timestamp"], self.bars["close"], strict=True)
-            if pd.notna(close)
-        }
+        """Bar timestamp -> close price, for filling in missing prices.
+
+        Cached like :attr:`decision_by_timestamp` (rebuilding it per
+        lookup cost 11 ms per call; at 20 000 bars that is minutes per
+        chart pass).
+        """
+        def build() -> Dict[int, float]:
+            valid = self.bars["close"].notna()
+            stamps = self.bars.loc[valid, "timestamp"].to_numpy().tolist()
+            closes = self.bars.loc[valid, "close"].to_numpy().tolist()
+            return {int(t): float(c) for t, c in zip(stamps, closes, strict=True)}
+
+        return self._index("closes", build) if not self.bars.empty else {}
 
     def has_content(self) -> bool:
         """True when there is anything at all worth drawing."""

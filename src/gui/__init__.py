@@ -20,11 +20,20 @@ testable without a browser:
 ``replay``
     Computes a session by running the real pipeline.
 
-Phase 2 adds ``overlays`` / ``charts`` / ``theme``: the overlay
-descriptors and the Plotly figure builders. Nothing here imports
-Streamlit or Plotly at import time -- so the core stays importable in
-the Docker image, which installs from ``requirements.txt`` without the
-``viz`` extra.
+``sources``
+    Where a session comes from: live artifacts, a replay, or synthetic.
+``theme`` / ``overlays``
+    The palette and the overlay descriptors (what to draw, where) --
+    plain data, no figures.
+``charts`` / ``export``
+    The Plotly figure builders and the self-contained HTML report. These
+    are the ONLY modules that import Plotly, and nothing in this package
+    imports them eagerly -- so the core stays importable in the Docker
+    image, which installs from ``requirements.txt`` without the ``viz``
+    extra.
+
+The Streamlit app lives in ``scripts/trade_map_app.py`` and the HTML
+exporter CLI in ``scripts/trade_map.py``.
 """
 
 __all__ = [

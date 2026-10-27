@@ -17,13 +17,15 @@ import json
 import logging
 import os
 import pickle
+from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
 
-from ..registry.db import DEFAULT_DB_PATH, connect
+from ..labeling.hold_policy import HoldPolicy, model_alignment_problem
+from ..registry.db import DEFAULT_DB_PATH, MEMORY_PATH, connect, open_connection
 from ..state.contracts import (
     FEATURE_SCHEMA_VERSION,
     ExpertAction,
@@ -100,16 +102,37 @@ class RiskStateStore:
     restarts by design (§5.3, §14 test_circuit_breaker_persists_across_restart).
     """
 
-    def __init__(self, db_path: str = DEFAULT_DB_PATH):
-        self.db_path = db_path
+    def __init__(self, db_path: str = DEFAULT_DB_PATH, persistent: bool = True):
+        """``persistent=False`` keeps the state in a private in-memory
+        database that dies with the store: for a viewer (the Trade Map
+        GUI replay) that needs the breaker's semantics but must neither
+        pay for durability nor touch a file. The counters, the daily-loss
+        accumulator and the trip flags behave identically either way.
+        """
+        self.db_path = db_path if persistent else MEMORY_PATH
+        self._private = open_connection(MEMORY_PATH) if not persistent else None
+
+    @contextmanager
+    def _connect(self):
+        """One pooled connection per store (WAL), or the private in-memory one."""
+        if self._private is not None:
+            try:
+                yield self._private
+                self._private.commit()
+            except BaseException:
+                self._private.rollback()
+                raise
+        else:
+            with connect(self.db_path, wal=True) as conn:
+                yield conn
 
     def _get(self, key: str, default=None):
-        with connect(self.db_path) as conn:
+        with self._connect() as conn:
             row = conn.execute("SELECT value FROM risk_state WHERE key=?", (key,)).fetchone()
             return json.loads(row["value"]) if row else default
 
     def _set(self, key: str, value) -> None:
-        with connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.execute(
                 "INSERT INTO risk_state (key, value, updated_at) VALUES (?, ?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
@@ -176,7 +199,7 @@ class RiskStateStore:
 
     # ---- breaker trip/reset (independent of the counters above) ----
     def trip(self, breaker_type: str, reason: str) -> None:
-        with connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.execute(
                 "INSERT INTO circuit_breaker_halts (breaker_type, tripped_at, reason, active, reset_at) "
                 "VALUES (?, ?, ?, 1, NULL) "
@@ -186,7 +209,7 @@ class RiskStateStore:
             )
 
     def reset(self, breaker_type: str) -> None:
-        with connect(self.db_path) as conn:
+        with self._connect() as conn:
             conn.execute(
                 "UPDATE circuit_breaker_halts SET active=0, reset_at=? WHERE breaker_type=?",
                 (datetime.now(timezone.utc).isoformat(), breaker_type),
@@ -197,14 +220,14 @@ class RiskStateStore:
             self._set("consecutive_losses", 0)
 
     def is_tripped(self, breaker_type: str) -> bool:
-        with connect(self.db_path) as conn:
+        with self._connect() as conn:
             row = conn.execute(
                 "SELECT active FROM circuit_breaker_halts WHERE breaker_type=?", (breaker_type,)
             ).fetchone()
             return bool(row["active"]) if row else False
 
     def active_halts(self) -> List[dict]:
-        with connect(self.db_path) as conn:
+        with self._connect() as conn:
             rows = conn.execute("SELECT * FROM circuit_breaker_halts WHERE active=1").fetchall()
             return [dict(r) for r in rows]
 
@@ -217,7 +240,11 @@ class RiskLayer:
         model_path: Optional[str] = None,
         data_granularity: str = "1m",
         kill_switch_path: str = "data/control/EMERGENCY_STOP",
+        hold_policy: Optional[HoldPolicy] = None,
+        require_aligned_models: bool = False,
     ):
+        self.hold_policy = hold_policy
+        self.require_aligned_models = require_aligned_models
         self.config = config
         self.sizing_cfg = config.get("sizing", {})
         self.hard_rules = config.get("hard_rules", {})
@@ -274,6 +301,16 @@ class RiskLayer:
             logger.warning(
                 f"Risk model trained on feature_schema={trained_feature_version}, "
                 f"current schema={FEATURE_SCHEMA_VERSION}. Falling back to rule-based sizing only."
+            )
+            return
+
+        problem = model_alignment_problem(
+            payload, self.hold_policy, require_aligned=self.require_aligned_models,
+        )
+        if problem is not None:
+            logger.warning(
+                f"Risk model at {p} is not aligned with the running harness ({problem}). "
+                f"Falling back to rule-based sizing only. Retrain with scripts/train_risk_model.py."
             )
             return
 

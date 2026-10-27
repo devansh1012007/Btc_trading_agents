@@ -17,6 +17,7 @@ from typing import Dict, List
 import pandas as pd
 
 from ..experts.expert_registry import build_experts
+from ..labeling.hold_policy import alignment_settings
 from ..layers.expert_layer import ExpertLayer
 from ..layers.feature_engine import FeatureEngine
 from ..layers.market_data import MarketDataLayer
@@ -82,16 +83,19 @@ def replay_full_stack(
 
     expert_layer = opportunity_filter = router = None
     if run_experts:
+        hold_policy, require_aligned = alignment_settings(config)
         experts = build_experts(config, data_granularity=data_granularity)
         expert_layer = ExpertLayer(experts)
         opportunity_filter = OpportunityFilter(
             config=opp_cfg, labeling_config=labeling_cfg,
             model_path=opp_cfg.get("ml_model", {}).get("model_path"),
             data_granularity=data_granularity,
+            hold_policy=hold_policy, require_aligned_models=require_aligned,
         )
         router = Router(
             config=router_cfg, model_path=router_cfg.get("model", {}).get("model_path"),
             data_granularity=data_granularity,
+            hold_policy=hold_policy, require_aligned_models=require_aligned,
         )
 
     snapshots = MarketDataLayer.batch_create_from_dataframe(df_ohlcv, symbol)

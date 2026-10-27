@@ -34,6 +34,7 @@ import yaml
 
 from src.connectors.data_source import CCXTConnector
 from src.experts.expert_registry import build_experts
+from src.labeling.hold_policy import alignment_settings
 from src.layers.expert_layer import ExpertLayer
 from src.layers.feature_engine import FeatureEngine
 from src.layers.market_data import MarketDataLayer
@@ -120,6 +121,9 @@ class TradingPipeline:
             data_granularity=self.data_granularity,
         )
 
+        # Fails here -- not per bar -- if the minimum-trade-duration policy
+        # cannot be satisfied by this config (see src/labeling/hold_policy.py).
+        hold_policy, require_aligned = alignment_settings(self.config)
         experts = build_experts(self.config, data_granularity=self.data_granularity)
         self.expert_layer = ExpertLayer(experts)
 
@@ -127,11 +131,13 @@ class TradingPipeline:
             config=opp_cfg, labeling_config=labeling_cfg,
             model_path=opp_cfg.get("ml_model", {}).get("model_path"),
             data_granularity=self.data_granularity,
+            hold_policy=hold_policy, require_aligned_models=require_aligned,
         )
 
         self.router = Router(
             config=router_cfg, model_path=router_cfg.get("model", {}).get("model_path"),
             data_granularity=self.data_granularity,
+            hold_policy=hold_policy, require_aligned_models=require_aligned,
         )
 
         Path(f"{data_dir}/raw").mkdir(parents=True, exist_ok=True)

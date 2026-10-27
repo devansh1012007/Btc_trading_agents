@@ -58,12 +58,13 @@ demo = [
     "streamlit>=1.30.0",
     "matplotlib>=3.7.0",
 ]
-# Trade Map GUI (charts). Kept OUT of the core dependencies on purpose:
+# Trade Map GUI (charts + app). Kept OUT of the core dependencies on purpose:
 # the Docker image installs requirements.txt, and `import src.gui` must
 # keep working there without plotly. `src/gui/__init__.py` therefore
 # imports no charting library at module scope.
 viz = [
-    "plotly>=5.0.0",
+    "plotly>=5.18.0",
+    "streamlit>=1.36.0",   # st.plotly_chart / st.dataframe on_select (clickable chart + trade table)
 ]
 
 # ---------------------------------------------------------------------------

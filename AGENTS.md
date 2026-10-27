@@ -14,8 +14,11 @@ src/
   backtest/                ← replay.py, walk_forward.py
   execution/               ← execution_engine + paper_sim/paper_live/live backends
     position_lifecycle.py   ← OpenPosition, check_position_exit,
-                              build_execution_engine (shared by the
-                              deployment loop and the GUI replay)
+                              build_execution_engine, and process_bar():
+                              THE per-bar block (exit → risk → order →
+                              open → classify → trace). run_historical,
+                              run_live_loop and the GUI replay all call it;
+                              only the journal callbacks differ
   liquidity/               ← synthetic_liquidity_model
   registry/                ← model registry (SQLite: pending → approved → superseded)
   feedback/                ← trade_journal, zone_event_log, system_state_archive
@@ -41,6 +44,16 @@ src/
                               log, decision traces, zone events, OHLCV
     instruments.py         ← InstrumentSpec + the YAML contract registry
     replay.py              ← replays a session through the real pipeline
+                              (calls execution.position_lifecycle.process_bar)
+    sources.py             ← artifacts → replay → synthetic session loaders +
+                              summarize_session (no streamlit / plotly)
+    theme.py               ← palette; per-stage colours DERIVED from
+                              decision_trace.STAGE_STYLES (no second copy)
+    overlays.py            ← WHAT to draw and WHERE, as frozen data (entries,
+                              exits, spans, decisions, zones, regimes, equity)
+    charts.py              ← Plotly figure builders (the only module that
+                              imports plotly; never imported by gui/__init__)
+    export.py              ← self-contained HTML report
 config/
   settings.base.yaml       ← full config (all layers)
   settings.paper.yaml      ← env overlay (default)
@@ -105,7 +118,7 @@ data/                      ← gitignored: raw/, processed/, models/, logs/
 
 - `pyproject.toml` — installable (`pip install -e ".[dev]"`); deps mirror
   requirements.txt (keep in sync; Docker installs from requirements.txt).
-- Extras: `dev` (ruff, mypy, pytest-cov), `demo` (streamlit, matplotlib), `viz` (plotly).
+- Extras: `dev` (ruff, mypy, pytest-cov), `demo` (streamlit, matplotlib), `viz` (plotly + streamlit, for the Trade Map GUI).
 - `src` is the installed top-level package (`[tool.setuptools.packages.find]`).
   Do not remove it: flat-layout auto-discovery would install `src/`'s
   CONTENTS as top-level packages and break `import src.gui`.
@@ -181,6 +194,12 @@ python scripts/generate_figures.py --synthetic 900 --relax-liquidity
 # NOTE: ports are NOT Streamlit's default 8501 — see "Ports" below.
 streamlit run scripts/demo_app.py    # or: make demo  (http://127.0.0.1:8571)
 make demo STREAMLIT_PORT=8600        # override the port
+
+# Trade Map GUI: where the system traded, and why  (pip install -e ".[viz]")
+make trade-map                       # http://127.0.0.1:8572
+make trade-map TRADE_MAP_PORT=8600   # override the port
+make trade-map-export                # self-contained HTML -> data/reports/trade_map.html
+python scripts/trade_map.py --source synthetic --out /tmp/trade_map.html
 ```
 
 # Ablation ladder (contribution of each component)
@@ -194,8 +213,10 @@ Streamlit binds **127.0.0.1:8571** by default (`make demo`), not
 Streamlit's 8501, because several checkouts (or several agents) can run
 on the same host. `.streamlit/config.toml` holds the default; the
 `STREAMLIT_PORT` Makefile variable overrides it per invocation.
-**Never stop another project's container or dev server to free a port —
-pick a different one.**
+The Trade Map GUI binds **127.0.0.1:8572** (`make trade-map`;
+`TRADE_MAP_PORT` overrides it) so it runs next to the demo. **Nothing
+here ever uses 8501.** **Never stop another project's container or dev
+server to free a port — pick a different one.**
 
 ## Config system (easy to get wrong)
 
@@ -235,12 +256,17 @@ MarketSnapshot → FeatureVector → RegimeState → ZoneMap →
 ## Key constraints
 
 - **No look-ahead**: every feature is computed only from information available at that bar's timestamp.
-- **One concurrent position max** (`risk.circuit_breakers.max_concurrent_positions: 1`). Enforced in `run.py` — raises `ValueError` if config requests > 1 (real multi-position support is a future item).
+- **Minimum trade duration: 10 s, fill to exit** (`trade_duration.min_trade_seconds`).
+  One rule in `src/labeling/hold_policy.py` + `barrier_exit_step`; the labeler, the
+  live position and every model loader use it. Models carry a `training_alignment`
+  contract and are refused under a different policy or when legacy. Details:
+  `docs/explain/min-trade-duration.md`.
+- **One concurrent position max** (`risk.circuit_breakers.max_concurrent_positions: 1`). Enforced in `process_bar` (`src/execution/position_lifecycle.py`): a bar only looks for an entry while nothing is open, so a value above 1 is accepted but still opens at most ONE position; `max_concurrent_positions()` raises `ValueError` for a value **below 1** (real multi-position support is a future item).
 - **Trade rate limiting**: `max_trades_per_hour` (rolling 1-hour window) and `min_bars_between_orders` enforced in `RiskLayer.evaluate()`.
 - **Circuit breakers persist** across restarts (SQLite in `data/registry.db`).
 - **Kill switch**: `data/control/EMERGENCY_STOP` file halts the live loop.
 - **Consistency validation**: `scripts/preflight.py` runs before session start — validates unit consistency, threshold plausibility, breaker enforcement paths, and feature schema version.
-- Tests have **no conftest.py** — all fixtures are inline helper functions in each test file.
+- `tests/conftest.py` holds the SHARED builders only (sys.path bootstrap, `paper_config`/`hold_config`, `make_journal_db` via the real schema, `synthetic_bars`, contract builders, and an autouse fixture that closes pooled SQLite handles). Per-file fixtures stay in their file.
 - **Tests must not write to the repo's TRACKED `data/`.**
   `data/registry.db` is tracked, so a test that writes to it dirties the
   working tree; `data/raw|processed|logs|models` are gitignored. Run
@@ -250,7 +276,24 @@ MarketSnapshot → FeatureVector → RegimeState → ZoneMap →
   (`[tool.ruff]`) and `mypy` (`[tool.mypy]`; `src/state` + `src/reporting`
   are strict). `make check` runs lint + typecheck + tests.
 
-## The Trade Map GUI (living plan)
+## The Trade Map GUI
+
+- **One vocabulary.** The terminal stages (`TERMINAL_STAGES`), their labels
+  (`STAGE_LABELS`) and their console styles (`STAGE_STYLES`) live in
+  `src/diagnostics/decision_trace.py`. The TUI, the diagnostics CLI and the
+  GUI all read them; `src/gui/theme.py` DERIVES its colours from the styles.
+  Never add a stage in one place.
+- **The GUI is a viewer.** It never places an order (replays are forced to
+  `paper_sim`) and never writes under the tracked `data/`. Its risk-layer
+  store is non-persistent (`RiskStateStore(persistent=False)`).
+- **`src/` never imports `scripts/`**, and `src/gui/__init__.py` imports no
+  charting library (Docker installs `requirements.txt`, which has no plotly).
+- **SQLite is pooled.** `src.registry.db.connect()` yields one connection per
+  file per thread (schema applied once, re-opened if the file is replaced).
+  Callers must not close it; use `close_connection` / `close_all_connections`.
+- Details: `docs/explain/trade-map-gui.md`.
+
+### Living plan
 
 `docs/TRADE_MAP_PLAN.md` is the **living plan** for the Trade Map GUI:
 every phase, its tasks, its acceptance criteria and its status. Update

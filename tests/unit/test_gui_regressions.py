@@ -5,7 +5,6 @@ Each test here pins one specific failure mode that was live at the time
 of the review, so a future change cannot silently reintroduce it.
 """
 import json
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -245,38 +244,20 @@ def test_a_failed_execution_is_classified_as_execution_failed():
 # T12 / T13 / T14: the readers are read-only and correctly typed
 # ---------------------------------------------------------------------------
 
-def test_reading_the_journal_does_not_modify_the_database(tmp_path):
-    db = tmp_path / "registry.db"
-    conn = sqlite3.connect(db)
-    conn.execute(
-        "CREATE TABLE trade_journal (trade_id TEXT PRIMARY KEY, entry_timestamp INTEGER, "
-        "entry_price REAL, exit_timestamp INTEGER, exit_price REAL, exit_reason TEXT, "
-        "expert_used TEXT, regime_at_entry TEXT, direction INTEGER, size REAL, "
-        "realized_pnl_pct REAL, realized_pnl_usdt REAL, fees_paid REAL, "
-        "slippage_realized REAL, router_confidence REAL, risk_score_at_entry REAL, mode TEXT)"
-    )
-    conn.commit()
-    conn.close()
+def test_reading_the_journal_does_not_modify_the_database(tmp_path, make_journal_db):
+    db = make_journal_db(tmp_path / "registry.db", rows=[])
     before = db.read_bytes()
     read_trade_journal(str(db))
     assert db.read_bytes() == before
 
 
-def test_trade_columns_are_numeric_not_object(tmp_path):
-    db = tmp_path / "registry.db"
-    conn = sqlite3.connect(db)
-    conn.execute(
-        "CREATE TABLE trade_journal (trade_id TEXT PRIMARY KEY, entry_timestamp INTEGER, "
-        "entry_price REAL, exit_timestamp INTEGER, exit_price REAL, exit_reason TEXT, "
-        "expert_used TEXT, regime_at_entry TEXT, direction INTEGER, size REAL, "
-        "realized_pnl_pct REAL, realized_pnl_usdt REAL, fees_paid REAL, "
-        "slippage_realized REAL, router_confidence REAL, risk_score_at_entry REAL, mode TEXT)"
-    )
-    conn.execute("INSERT INTO trade_journal VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                 ("t1", 100, 1.0, 200, 2.0, "take_profit", "e", "r", 1, 10.0, 1.0, 1.0,
-                  0.1, 0.0, 0.5, 0.2, "paper"))
-    conn.commit()
-    conn.close()
+def test_trade_columns_are_numeric_not_object(tmp_path, make_journal_db):
+    db = make_journal_db(tmp_path / "registry.db", rows=[{
+        "entry_timestamp": 100, "entry_price": 1.0, "exit_timestamp": 200,
+        "exit_price": 2.0, "size": 10.0, "realized_pnl_pct": 1.0, "realized_pnl_usdt": 1.0,
+        "fees_paid": 0.1, "slippage_realized": 0.0, "router_confidence": 0.5,
+        "risk_score_at_entry": 0.2, "expert_used": "e", "regime_at_entry": "r",
+    }])
     frame = read_trade_journal(str(db))
     assert frame["pnl_pct"].dtype.kind == "f"
     assert frame["exit_timestamp"].dtype.kind == "f"

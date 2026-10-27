@@ -12,6 +12,7 @@ the trade journal, a decision JSONL line or a backtest.
 """
 import json
 import logging
+import os
 import sqlite3
 from pathlib import Path
 from typing import Dict, List, Optional, Set
@@ -36,10 +37,36 @@ from .timeframes import to_epoch_seconds
 
 logger = logging.getLogger(__name__)
 
+#: Repository root, derived from this file's location so the artifacts
+#: resolve the same way no matter which directory the GUI is launched
+#: from -- exactly how ``instruments.DEFAULT_REGISTRY_PATH`` does it.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
 DECISIONS_JSONL = "data/logs/decisions.jsonl"
 TRACE_DIR = "data/logs/decision_traces"
 ZONE_EVENTS_PATH = "data/logs/zone_events.parquet"
 RAW_DIR = "data/raw"
+
+
+def resolve_artifact_path(relative: str) -> str:
+    """Resolve a repo-relative artifact path.
+
+    The repository root wins; the current working directory is the
+    fallback (a run launched elsewhere -- the e2e tests, a container --
+    leaves its ``data/`` next to where it ran). An absolute path is
+    returned untouched, and when neither location exists the repo-root
+    path is returned so the "missing" log message names a stable place.
+    """
+    path = Path(relative)
+    if path.is_absolute():
+        return str(path)
+    repo_candidate = _REPO_ROOT / path
+    if repo_candidate.exists():
+        return str(repo_candidate)
+    cwd_candidate = Path.cwd() / path
+    if cwd_candidate.exists():
+        return str(cwd_candidate)
+    return str(repo_candidate)
 
 #: trade_journal column -> normalised column.
 _JOURNAL_COLUMN_MAP = {
@@ -73,8 +100,15 @@ _OHLCV_ALIASES = {
 
 
 def _read_only_connection(db_path: str) -> Optional[sqlite3.Connection]:
-    """Open a SQLite database read-only, or return None if that is impossible."""
+    """Open a SQLite database read-only, or return None if that is impossible.
+
+    A missing file is the normal "nothing has run yet" case and is logged
+    quietly; a file that EXISTS but cannot be opened (locked, corrupt,
+    permissions) is logged as a warning -- otherwise it would look
+    exactly like "no trades".
+    """
     if not Path(db_path).exists():
+        logger.debug("No database at %s", db_path)
         return None
     try:
         # as_uri() percent-encodes the path, so a name containing '?' or
@@ -83,16 +117,20 @@ def _read_only_connection(db_path: str) -> Optional[sqlite3.Connection]:
         conn = sqlite3.connect(uri, uri=True)
         conn.row_factory = sqlite3.Row
         return conn
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("Could not open the database %s read-only: %s", db_path, exc)
         return None
 
 
-def read_trade_journal(db_path: str = DEFAULT_DB_PATH) -> pd.DataFrame:
+def read_trade_journal(db_path: Optional[str] = None) -> pd.DataFrame:
     """Read ``trade_journal`` into the normalised trade schema.
 
-    Returns an empty (but correctly shaped) frame when the database or
-    the table is missing.
+    ``db_path`` defaults to the repo's ``data/registry.db`` (see
+    :func:`resolve_artifact_path`). Returns an empty (but correctly
+    shaped) frame when the database or the table is missing; a database
+    that exists but cannot be read is logged as a warning.
     """
+    db_path = db_path or resolve_artifact_path(DEFAULT_DB_PATH)
     conn = _read_only_connection(db_path)
     if conn is None:
         return empty_frame(TRADE_COLUMNS)
@@ -102,11 +140,13 @@ def read_trade_journal(db_path: str = DEFAULT_DB_PATH) -> pd.DataFrame:
             "SELECT name FROM sqlite_master WHERE type='table' AND name='trade_journal'"
         ).fetchone()
         if row is None:
+            logger.info("%s has no trade_journal table yet", db_path)
             return empty_frame(TRADE_COLUMNS)
         rows = conn.execute(
             "SELECT * FROM trade_journal ORDER BY entry_timestamp ASC"
         ).fetchall()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        logger.warning("Could not read the trade journal in %s: %s", db_path, exc)
         return empty_frame(TRADE_COLUMNS)
     finally:
         conn.close()
@@ -122,12 +162,16 @@ def read_trade_journal(db_path: str = DEFAULT_DB_PATH) -> pd.DataFrame:
         if col not in out.columns:
             out[col] = pd.NA
     out = coerce_numeric(out[TRADE_COLUMNS], NUMERIC_TRADE_COLUMNS)
+    before = len(out)
     out = out.dropna(subset=["entry_timestamp"])
+    if len(out) < before:
+        logger.warning("Dropped %d trade-journal row(s) with no entry_timestamp",
+                       before - len(out))
     out = normalize_dtypes(out)
     return out.reset_index(drop=True)
 
 
-def read_decisions_jsonl(path: str = DECISIONS_JSONL) -> pd.DataFrame:
+def read_decisions_jsonl(path: Optional[str] = None) -> pd.DataFrame:
     """Read the per-bar §8 decision records into the normalised schema.
 
     Tolerates the two shapes the log has taken (the canonical ``src/``
@@ -137,7 +181,10 @@ def read_decisions_jsonl(path: str = DECISIONS_JSONL) -> pd.DataFrame:
     objects all land on the same axis, so a decision can be joined to
     its bar.
     """
-    p = Path(path)
+    # The deployment loop honours $DECISIONS_JSONL when it writes the
+    # feed, so the reader must too or the two would look in different
+    # places.
+    p = Path(path or os.environ.get("DECISIONS_JSONL") or resolve_artifact_path(DECISIONS_JSONL))
     if not p.exists():
         return empty_frame(DECISION_COLUMNS)
 
@@ -172,9 +219,9 @@ def read_decisions_jsonl(path: str = DECISIONS_JSONL) -> pd.DataFrame:
     return frame.sort_values("timestamp").reset_index(drop=True)
 
 
-def read_decision_traces(base_dir: str = TRACE_DIR) -> Dict[int, dict]:
+def read_decision_traces(base_dir: Optional[str] = None) -> Dict[int, dict]:
     """Raw decision traces keyed by bar timestamp."""
-    traces = load_decision_traces(base_dir)
+    traces = load_decision_traces(base_dir or resolve_artifact_path(TRACE_DIR))
     out: Dict[int, dict] = {}
     for trace in traces:
         ts = trace.get("timestamp")
@@ -187,8 +234,9 @@ def read_decision_traces(base_dir: str = TRACE_DIR) -> Dict[int, dict]:
     return out
 
 
-def read_zone_events(path: str = ZONE_EVENTS_PATH) -> pd.DataFrame:
+def read_zone_events(path: Optional[str] = None) -> pd.DataFrame:
     """Zone lifecycle events, normalised to the GUI's column vocabulary."""
+    path = path or resolve_artifact_path(ZONE_EVENTS_PATH)
     try:
         frame = load_zone_events(path)
     except Exception as exc:
@@ -314,7 +362,7 @@ def _stem_matches_token(stem: str, token: str) -> bool:
     return bool(remainder.startswith("_") and remainder[1:2].isdigit())
 
 
-def find_ohlcv_files(symbol: str, raw_dir: str = RAW_DIR) -> List[Path]:
+def find_ohlcv_files(symbol: str, raw_dir: Optional[str] = None) -> List[Path]:
     """Every OHLCV file that holds ``symbol``'s bars.
 
     Handles both layouts the repo uses: per-day parquet written by the
@@ -322,7 +370,7 @@ def find_ohlcv_files(symbol: str, raw_dir: str = RAW_DIR) -> List[Path]:
     (``BTCUSDT.csv``). A perpetual's file is NOT returned for its spot
     symbol, and vice versa.
     """
-    directory = Path(raw_dir)
+    directory = Path(raw_dir or resolve_artifact_path(RAW_DIR))
     if not directory.exists():
         return []
 
@@ -338,7 +386,7 @@ def find_ohlcv_files(symbol: str, raw_dir: str = RAW_DIR) -> List[Path]:
     return found
 
 
-def load_symbol_ohlcv(symbol: str, raw_dir: str = RAW_DIR) -> pd.DataFrame:
+def load_symbol_ohlcv(symbol: str, raw_dir: Optional[str] = None) -> pd.DataFrame:
     """Load and merge every OHLCV file belonging to ``symbol``."""
     frames = [load_ohlcv(str(path)) for path in find_ohlcv_files(symbol, raw_dir)]
     frames = [f for f in frames if not f.empty]

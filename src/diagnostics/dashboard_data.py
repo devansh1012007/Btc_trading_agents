@@ -24,31 +24,17 @@ REGISTRY_DB = "data/registry.db"
 REPORT_DIR = "data/reports"
 KILL_SWITCH_PATH = "data/control/EMERGENCY_STOP"
 
-# Canonical stage names AND their human-readable labels live in
-# src/diagnostics/decision_trace.py -- one vocabulary, so the TUI
-# dashboard, the diagnostics CLI and the Trade Map GUI can never disagree
-# about what a stage is called.
+# Canonical stage names, their human-readable labels AND their console
+# styles live in src/diagnostics/decision_trace.py -- one vocabulary, so
+# the TUI dashboard, the diagnostics CLI and the Trade Map GUI can never
+# disagree about what a stage is called or how it is coloured. They are
+# re-exported here for the TUI's existing ``dd.STAGE_STYLES`` call sites.
 #
 # The drift guard between the two is a UNIT TEST (tests/unit/
 # test_decision_trace.py), not an import-time assert: an assert here
 # would turn a routine vocabulary addition into a boot failure of the
 # whole GUI package, and it is stripped under `python -O` anyway.
-from .decision_trace import STAGE_LABELS, TERMINAL_STAGES  # noqa: E402,F401
-
-#: Terminal stage -> terminal-console style. Lives here, next to the
-#: vocabulary, so it is covered by the same unit test that guards the
-#: vocabulary itself (a stage with no style would silently render in the
-#: default colour).
-STAGE_STYLES: Dict[str, str] = {
-    "executed": "green",
-    "circuit_breaker": "red",
-    "execution_failed": "red",
-    "risk_layer": "yellow",
-    "opportunity_filter": "yellow",
-    "router_no_trade": "cyan",
-    "no_expert_candidate": "white",
-    "position_open": "magenta",
-}
+from .decision_trace import STAGE_LABELS, STAGE_STYLES, TERMINAL_STAGES  # noqa: E402,F401
 
 
 def stage_label(stage: str) -> str:

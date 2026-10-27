@@ -20,6 +20,11 @@ Cross-Layer Consistency Validation (Phase 5, §8). Two mechanisms:
 4. Feature schema: validate_feature_schema() checks that all models in
    the registry have a feature_version matching the current schema.
 
+5. Hold policy: validate_hold_policy() checks the minimum-trade-duration
+   rule can be satisfied (max_holding_bars x granularity covers the
+   minimum plus the entry latency) and that the walk-forward embargo
+   covers the label horizon.
+
 Raises ConfigConsistencyError on any failure. Used by preflight.py
 before starting live or paper-live sessions.
 """
@@ -28,6 +33,7 @@ import logging
 
 import numpy as np
 
+from ..labeling.hold_policy import HoldPolicy, HoldPolicyError
 from ..liquidity.synthetic_liquidity_model import estimate_synthetic_liquidity
 from ..state.contracts import FeatureVector, MarketSnapshot
 
@@ -182,9 +188,39 @@ def validate_feature_schema(config: dict, db_path: str = "data/registry.db") -> 
             )
 
 
+def validate_hold_policy(config: dict) -> None:
+    """The minimum-trade-duration rule must be satisfiable by this config.
+
+    Fails if ``labeling.max_holding_bars`` x ``system.data_granularity`` is
+    shorter than ``trade_duration.min_trade_seconds`` plus the entry
+    latency (every timeout would be an illegal trade), if the granularity
+    is unparseable, or if ``backtest.embargo_bars`` is shorter than the
+    label horizon (the last training labels would be decided by bars
+    inside the test window).
+    """
+    try:
+        policy = HoldPolicy.from_config(config)
+    except HoldPolicyError as exc:
+        raise ConfigConsistencyError(f"Hold policy: {exc}") from exc
+
+    embargo = int((config.get("backtest", {}) or {}).get("embargo_bars", 0))
+    if embargo and embargo < policy.max_holding_bars:
+        raise ConfigConsistencyError(
+            f"backtest.embargo_bars={embargo} is shorter than labeling.max_holding_bars="
+            f"{policy.max_holding_bars}: training labels would leak into the test window"
+        )
+    if policy.min_hold_bars > 1:
+        logger.info(
+            "Hold policy: %gs minimum = %d bars of %s (+%gs entry latency); exits are locked out "
+            "until then.", policy.min_trade_seconds, policy.min_hold_bars, policy.granularity,
+            policy.entry_latency_seconds,
+        )
+
+
 def validate_config_consistency(config: dict, db_path: str = "data/registry.db") -> None:
     """Run all consistency checks. Raises ConfigConsistencyError on failure."""
     logger.info("Running cross-layer consistency validation...")
+    validate_hold_policy(config)
     validate_unit_consistency(config)
     validate_threshold_plausibility(config)
     validate_breaker_enforcement_paths(config)

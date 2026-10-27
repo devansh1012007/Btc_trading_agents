@@ -20,7 +20,7 @@ import json
 import platform
 import sys
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -33,27 +33,15 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from src.layers.market_data import MarketDataLayer  # noqa: E402
 from src.pipeline import TradingPipeline  # noqa: E402
 from src.utils.config_helpers import load_layered_config  # noqa: E402
+from src.utils.synthetic import synthetic_ohlcv  # noqa: E402
 
 WARMUP_BARS = 110  # > default feature lookback (100)
 
 
 def generate_synthetic_ohlcv(n_bars: int, seed: int = 42) -> pd.DataFrame:
-    """Same shape as full_stack_walk_forward_backtest.generate_synthetic_ohlcv."""
-    rng = np.random.default_rng(seed)
+    """Same series as the walk-forward harness (``src/utils/synthetic.py``)."""
     start = datetime.now(timezone.utc).replace(second=0, microsecond=0)
-    timestamps = [(start + timedelta(minutes=i)).timestamp() for i in range(n_bars)]
-    price, rows = 50_000.0, []
-    seg = max(n_bars // 4, 1)
-    for i in range(n_bars):
-        drift = 12.0 if i < seg else (-10.0 if i < 2 * seg else (2.0 if i < 3 * seg else -18.0))
-        vol = 8.0 if i >= 3 * seg else 5.0
-        price = max(price + rng.normal(drift, vol), 1000.0)
-        o = price + rng.normal(0, 3)
-        h = max(o, price) + abs(rng.normal(0, vol * 0.8))
-        low = min(o, price) - abs(rng.normal(0, vol * 0.8))
-        rows.append({"timestamp": timestamps[i], "open": o, "high": h, "low": low,
-                     "close": price, "volume": abs(rng.normal(120, 35))})
-    return pd.DataFrame(rows)
+    return synthetic_ohlcv(n_bars, seed=seed, start=start)
 
 
 def pct(values, q):

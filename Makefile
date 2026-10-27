@@ -26,6 +26,11 @@ BENCH_DATE := $(shell date +%Y_%m_%d)
 #   make demo STREAMLIT_PORT=8600
 STREAMLIT_PORT ?= 8571
 
+# The Trade Map GUI gets its own port so it can run next to `make demo`.
+# Override per invocation:  make trade-map TRADE_MAP_PORT=8600
+TRADE_MAP_PORT ?= 8572
+TRADE_MAP_OUT  ?= $(REPORTS_DIR)/trade_map.html
+
 .PHONY: help
 help:
 	@echo "Available targets:"
@@ -46,6 +51,8 @@ help:
 	@echo "  make latency           Software performance benchmark (latency/RAM)"
 	@echo "  make figures           Generate docs/images figures (synthetic)"
 	@echo "  make demo              Launch the Streamlit decision demo (port $(STREAMLIT_PORT))"
+	@echo "  make trade-map         Launch the Trade Map GUI (port $(TRADE_MAP_PORT), needs the viz extra)"
+	@echo "  make trade-map-export  Write a self-contained Trade Map HTML ($(TRADE_MAP_OUT))"
 	@echo "  make build-image       Build the Docker image"
 	@echo "  make install-dev       Create venv + install runtime and dev deps"
 	@echo "  make clean             Remove caches and build artifacts"
@@ -137,6 +144,16 @@ figures:
 demo:
 	streamlit run $(SCRIPTS_DIR)/demo_app.py \
 		--server.port=$(STREAMLIT_PORT) --server.address=127.0.0.1
+
+# ---------------------------------------------------------------------------
+# Trade Map GUI  (pip install -e ".[viz]")
+# ---------------------------------------------------------------------------
+.PHONY: trade-map trade-map-export
+trade-map:
+	TRADE_MAP_PORT=$(TRADE_MAP_PORT) $(PYTHON) $(SCRIPTS_DIR)/trade_map_app.py
+
+trade-map-export:
+	$(PYTHON) $(SCRIPTS_DIR)/trade_map.py --source auto --out $(TRADE_MAP_OUT)
 
 # ---------------------------------------------------------------------------
 # Docker

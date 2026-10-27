@@ -16,6 +16,7 @@ from typing import Dict, Optional
 
 import numpy as np
 
+from ..labeling.hold_policy import HoldPolicy
 from ..state.contracts import ExpertAction, ExpertOutput, FeatureVector, RegimeState, ZoneMap
 from ..utils.config_helpers import parse_regime_list
 from ..utils.rolling_buffer import RollingBarBuffer
@@ -39,8 +40,11 @@ def build_features(fv: FeatureVector, zones: ZoneMap, regime: RegimeState, direc
 class BreakoutExpert(BaseExpert):
     expert_name = "breakout_expert"
 
-    def __init__(self, config: dict, model_path: Optional[str] = None, data_granularity: str = "1m"):
-        super().__init__(config, model_path, data_granularity)
+    def __init__(
+        self, config: dict, model_path: Optional[str] = None, data_granularity: str = "1m",
+        hold_policy: Optional[HoldPolicy] = None, require_aligned_models: bool = False,
+    ):
+        super().__init__(config, model_path, data_granularity, hold_policy, require_aligned_models)
         self._regime_requirement = parse_regime_list(config["regime_requirement"])
         lookback = config.get("compression_lookback_bars", 20)
         self._volatility_history = RollingBarBuffer(maxlen=lookback)

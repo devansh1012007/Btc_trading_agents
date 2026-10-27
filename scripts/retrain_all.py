@@ -21,12 +21,32 @@ from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import yaml
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+from src.backtest.training_common import load_training_config
+from src.labeling.hold_policy import (
+    ALIGNED_COMPONENTS,
+    POPULATION_EXPERT_GATE,
+    HoldPolicy,
+    HoldPolicyError,
+    registry_alignment_status,
+)
 from src.registry.model_registry import get_champion, register_version
+
+LABELS = "data/processed/triple_barrier_labels.parquet"
+
+#: Scripts that label under the harness's contract and so take ``--env``
+#: (the others -- zone survival, regime models -- are not trade-outcome models).
+ALIGNED_SCRIPTS = {
+    "scripts/train_triple_barrier.py", "scripts/train_trend_expert.py",
+    "scripts/train_mean_reversion_expert.py", "scripts/train_breakout_expert.py",
+    "scripts/train_opportunity_filter.py", "scripts/train_router.py", "scripts/train_risk_model.py",
+}
+
+#: The three experts train on ONE shared labeled dataset (one replay), so a
+#: pass that retrains several experts labels once, not three times.
+_COMPLETED_STEPS: set = set()
 
 # component -> (list of [script, extra_args] steps to run in order, output .pkl path)
 COMPONENT_STEPS = {
@@ -41,13 +61,25 @@ COMPONENT_STEPS = {
     "regime_classifier": ([(["scripts/train_regime_models.py"], [])], "data/models/regime_classifier.pkl"),
     "trend_expert": (
         [
-            (["scripts/train_triple_barrier.py"], ["--output", "data/processed/triple_barrier_labels.parquet"]),
-            (["scripts/train_trend_expert.py"], ["--input", "data/processed/triple_barrier_labels.parquet"]),
+            (["scripts/train_triple_barrier.py"], ["--output", LABELS]),
+            (["scripts/train_trend_expert.py"], ["--labels", LABELS]),
         ],
         "data/models/experts/trend_expert.pkl",
     ),
-    "mean_reversion_expert": ([(["scripts/train_mean_reversion_expert.py"], [])], "data/models/experts/mean_reversion_expert.pkl"),
-    "breakout_expert": ([(["scripts/train_breakout_expert.py"], [])], "data/models/experts/breakout_expert.pkl"),
+    "mean_reversion_expert": (
+        [
+            (["scripts/train_triple_barrier.py"], ["--output", LABELS]),
+            (["scripts/train_mean_reversion_expert.py"], ["--labels", LABELS]),
+        ],
+        "data/models/experts/mean_reversion_expert.pkl",
+    ),
+    "breakout_expert": (
+        [
+            (["scripts/train_triple_barrier.py"], ["--output", LABELS]),
+            (["scripts/train_breakout_expert.py"], ["--labels", LABELS]),
+        ],
+        "data/models/experts/breakout_expert.pkl",
+    ),
     "opportunity_filter": ([(["scripts/train_opportunity_filter.py"], [])], "data/models/opportunity_filter.pkl"),
     "router": ([(["scripts/train_router.py"], [])], "data/models/router.pkl"),
     "risk_model": ([(["scripts/train_risk_model.py"], [])], "data/models/risk_model.pkl"),
@@ -64,20 +96,27 @@ def _extract_primary_metric(meta: dict) -> Optional[float]:
     return None
 
 
-def load_config(path="config/settings.base.yaml") -> dict:
-    p = Path(path)
-    return (yaml.safe_load(open(p)) or {}) if p.exists() else {}
+def load_config(path: Optional[str] = None, env: str = "paper") -> dict:
+    """The config the retrain labels under: the harness's layered config by default."""
+    return load_training_config(path, env)
 
 
-def run_step(script_and_args, input_path: str, config_path: str) -> bool:
+def run_step(script_and_args, input_path: str, config_path: Optional[str], env: str = "paper") -> bool:
     script, extra_args = script_and_args
     cmd = [sys.executable] + script + extra_args
-    if "--input" not in extra_args and script[0] not in ("scripts/train_mean_reversion_expert.py", "scripts/train_breakout_expert.py"):
-        pass  # some steps already specify --input explicitly above
-    if "--input" not in cmd:
+    # The expert scripts take their data from --labels; everything else from --input.
+    if "--input" not in cmd and "--labels" not in cmd:
         cmd += ["--input", input_path]
-    if "--config" not in cmd:
-        cmd += ["--config", config_path]
+    if config_path:
+        if "--config" not in cmd:
+            cmd += ["--config", config_path]
+    elif script[0] in ALIGNED_SCRIPTS and "--env" not in cmd:
+        cmd += ["--env", env]
+
+    key = tuple(cmd)
+    if key in _COMPLETED_STEPS:
+        logger.info(f"Already done this pass, skipping: {' '.join(cmd)}")
+        return True
 
     logger.info(f"Running: {' '.join(cmd)}")
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -85,13 +124,15 @@ def run_step(script_and_args, input_path: str, config_path: str) -> bool:
         logger.error(f"Step failed: {' '.join(cmd)}\n{result.stderr[-2000:]}")
         return False
     logger.info(result.stdout[-1000:])
+    _COMPLETED_STEPS.add(key)
     return True
 
 
-def retrain_component(component: str, input_path: str, config_path: str, config: dict) -> None:
+def retrain_component(component: str, input_path: str, config_path: Optional[str], config: dict,
+                      env: str = "paper") -> None:
     steps, model_path = COMPONENT_STEPS[component]
     for step in steps:
-        if not run_step(step, input_path, config_path):
+        if not run_step(step, input_path, config_path, env):
             logger.error(f"[{component}] retraining aborted -- a step failed")
             return
 
@@ -123,10 +164,26 @@ def retrain_component(component: str, input_path: str, config_path: str, config:
     else:
         logger.info(f"[{component}] challenger={challenger_metric} -- no champion yet to compare against")
 
+    # Harness-alignment gate: a trade-deciding model is only promotable if it
+    # was trained under the contract the running config enforces (minimum
+    # trade duration, population, horizon). A failure does not block
+    # registration -- it blocks promotion, and says why.
+    alignment_ok, alignment_problem = True, None
+    if component in ALIGNED_COMPONENTS:
+        policy = HoldPolicy.from_config(config)
+        expected = POPULATION_EXPERT_GATE if component.endswith("_expert") else None
+        alignment_ok, alignment_problem = registry_alignment_status(
+            meta, policy, expected_population=expected)
+        if not alignment_ok:
+            clears_margin = False
+            logger.error(f"[{component}] NOT harness-aligned: {alignment_problem}. "
+                         f"It will be registered, but approve_model.py will refuse it.")
+
     version_id = register_version(
         component=component, file_path=model_path,
         data_granularity=meta.get("granularity", "1m"),
-        walk_forward_metrics={**meta, "avg_auc": challenger_metric, "clears_promotion_margin": clears_margin},
+        walk_forward_metrics={**meta, "avg_auc": challenger_metric, "clears_promotion_margin": clears_margin,
+                              "alignment_ok": alignment_ok, "alignment_problem": alignment_problem},
         status="pending_approval",
     )
     logger.info(f"[{component}] registered {version_id} as pending_approval -- run scripts/approve_model.py to review")
@@ -135,11 +192,22 @@ def retrain_component(component: str, input_path: str, config_path: str, config:
 def main():
     parser = argparse.ArgumentParser(description="Retrain all configured components; never auto-promotes")
     parser.add_argument("--input", required=True, help="Historical OHLCV Parquet/CSV used for every component")
-    parser.add_argument("--config", default="config/settings.base.yaml")
+    parser.add_argument("--config", default=None,
+                        help="explicit config file (default: the layered config for --env, like the harness)")
+    parser.add_argument("--env", default="paper", choices=["paper", "live"])
     parser.add_argument("--components", nargs="*", default=None, help="Subset of components to retrain (default: all from config)")
     args = parser.parse_args()
 
-    config = load_config(args.config)
+    config = load_config(args.config, args.env)
+    # Validate the hold policy BEFORE any training starts: an unsatisfiable
+    # policy would otherwise fail inside each subprocess, one at a time.
+    try:
+        policy = HoldPolicy.from_config(config)
+    except HoldPolicyError as exc:
+        raise SystemExit(f"Refusing to retrain: the hold policy is not satisfiable: {exc}") from exc
+    logger.info(f"Hold policy: no trade shorter than {policy.min_trade_seconds:g}s "
+                f"({policy.min_hold_bars} bar(s) of {policy.granularity}, "
+                f"entry latency {policy.entry_latency_seconds:g}s)")
     components = args.components or config.get("retraining", {}).get("components", list(COMPONENT_STEPS.keys()))
 
     for component in components:
@@ -147,7 +215,7 @@ def main():
             logger.warning(f"Unknown component '{component}', skipping")
             continue
         logger.info(f"=== Retraining {component} ===")
-        retrain_component(component, args.input, args.config, config)
+        retrain_component(component, args.input, args.config, config, args.env)
 
     logger.info("Retraining pass complete. Nothing was auto-promoted -- run scripts/approve_model.py to review.")
 

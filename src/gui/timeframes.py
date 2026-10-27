@@ -103,10 +103,6 @@ def parse_timeframe(timeframe: str) -> int:
     )
 
 
-def is_valid_timeframe(timeframe: str) -> bool:
-    return str(timeframe).strip() in DISPLAY_TIMEFRAMES
-
-
 def base_timeframe_seconds(base_timeframe: str = "1m") -> int:
     """Seconds in one bar of the base granularity.
 
@@ -305,24 +301,3 @@ def align_to_timeframe(
     result = out.drop(columns=["_bucket"]).copy()
     result[timestamp_column] = out["_bucket"].to_numpy()
     return result[list(frame.columns)].reset_index(drop=True)
-
-
-def timeframe_seconds(timeframe: str) -> int:
-    """Alias for :func:`parse_timeframe`, kept for readability at call sites."""
-    return parse_timeframe(timeframe)
-
-
-def format_timeframe(timeframe: str) -> str:
-    """Canonical label for a timeframe string (normalising case)."""
-    key = str(timeframe).strip()
-    if key in DISPLAY_TIMEFRAMES:
-        return key
-    raise UnknownTimeframeError(f"Unknown timeframe {timeframe!r}")
-
-
-def seconds_to_timeframe(seconds: int) -> Optional[str]:
-    """Reverse lookup: the canonical timeframe string for a bar length."""
-    for tf, secs in DISPLAY_TIMEFRAMES.items():
-        if secs == int(seconds):
-            return tf
-    return None

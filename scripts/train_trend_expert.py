@@ -1,119 +1,85 @@
 """
-Train the Trend Expert's scoring model (§6.6, M3.4). Reads the combined
-triple-barrier-labeled dataset from train_triple_barrier.py, filters to
-trend_expert candidates, trains a binary LightGBM classifier via
-walk-forward CV, and saves a model card recording data_granularity for
-the mismatch-fallback check (§4.7).
+Train the Trend Expert's scoring model (§6.6, M3.4) the way the
+harness uses it.
+
+The training set is the expert's OWN deployment population: bars where
+``trend_expert.propose_candidate()`` fired and the Opportunity Filter
+passed, labeled with the harness's exit rule (simulated-fill entry,
+regime-specific barriers, the minimum-trade-duration lockout), one
+position at a time. See ``src/backtest/harness_harvest.py``.
+
+Two ways to supply it:
+
+    # reuse the combined dataset (all experts, one replay) -- the default path
+    python scripts/train_triple_barrier.py --input data/raw/BTC_USDT_mock.parquet
+    python scripts/train_trend_expert.py --labels data/processed/triple_barrier_labels.parquet
+
+    # or harvest just this expert straight from OHLCV
+    python scripts/train_trend_expert.py --input data/raw/BTC_USDT_mock.parquet
+
+The saved model carries a ``training_alignment`` contract; the running
+system serves it only when its hold policy matches (otherwise the expert
+falls back to its rule-based mode).
 """
 import argparse
-import json
 import logging
-import pickle
-from datetime import datetime, timezone
+import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import pandas as pd
-import yaml
+from src.backtest.harness_harvest import alignment_block_for, harvest_expert_samples  # noqa: E402
+from src.backtest.training_common import (  # noqa: E402
+    add_alignment_args,
+    expert_dataset,
+    load_training_config,
+    read_ohlcv,
+    require_filter_from_args,
+    sample_policy_from_args,
+    train_expert,
+)
+from src.experts.trend_expert import FEATURE_NAMES  # noqa: E402
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from src.backtest.walk_forward import WalkForwardSplitter
-from src.experts.trend_expert import FEATURE_NAMES
-
-
-def load_config(path="config/settings.base.yaml") -> dict:
-    p = Path(path)
-    return (yaml.safe_load(open(p)) or {}) if p.exists() else {}
-
-
-def train_and_validate(df: pd.DataFrame, splitter: WalkForwardSplitter):
-    import lightgbm as lgb
-    from sklearn.metrics import accuracy_score, roc_auc_score
-
-    X = df[FEATURE_NAMES].values
-    y = df["label"].values
-
-    def make_model():
-        return lgb.LGBMClassifier(n_estimators=150, max_depth=4, learning_rate=0.05,
-                                   subsample=0.8, colsample_bytree=0.8, random_state=42)
-
-    fold_metrics = []
-    if splitter.n_splits(len(df)) == 0:
-        logger.warning("Not enough samples for a walk-forward fold; fitting on all data without CV.")
-    else:
-        for fold_i, (train_idx, test_idx) in enumerate(splitter.split(len(df))):
-            model = make_model()
-            model.fit(X[train_idx], y[train_idx])
-            proba = model.predict_proba(X[test_idx])[:, 1]
-            preds = (proba >= 0.5).astype(int)
-            metric = {"fold": fold_i, "n_train": int(len(train_idx)), "n_test": int(len(test_idx)),
-                      "auc": float(roc_auc_score(y[test_idx], proba)) if len(set(y[test_idx])) > 1 else None,
-                      "accuracy": float(accuracy_score(y[test_idx], preds))}
-            fold_metrics.append(metric)
-            logger.info(f"Fold {fold_i}: {metric}")
-
-    final_model = make_model()
-    final_model.fit(X, y)
-    return final_model, fold_metrics
+EXPERT = "trend_expert"
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--input", default="data/processed/triple_barrier_labels.parquet")
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--labels", default=None,
+                        help="combined dataset from train_triple_barrier.py")
+    source.add_argument("--input", default=None, help="historical OHLCV Parquet/CSV to harvest from")
     parser.add_argument("--output", default="data/models/experts/trend_expert.pkl")
-    parser.add_argument("--config", default="config/settings.base.yaml")
+    parser.add_argument("--symbol", default="BTC/USDT")
+    parser.add_argument("--config", default=None, help="explicit config file (overrides --env)")
+    add_alignment_args(parser)
     args = parser.parse_args()
 
-    config = load_config(args.config)
-    backtest_cfg = config.get("backtest", {})
-    data_granularity = config.get("system", {}).get("data_granularity", "1m")
+    config = load_training_config(args.config, args.env)
 
-    df_all = pd.read_parquet(args.input)
-    df = df_all[df_all["expert_name"] == "trend_expert"].reset_index(drop=True)
-    if len(df) == 0:
-        raise SystemExit("No trend_expert candidates found -- run train_triple_barrier.py first")
+    if args.input:
+        require_filter = require_filter_from_args(args)
+        sample_policy = sample_policy_from_args(args)
+        df, stats, ctx = harvest_expert_samples(
+            read_ohlcv(args.input), args.symbol, config, expert_names=[EXPERT],
+            require_filter_pass=require_filter, sample_policy=sample_policy,
+        )
+        if len(df) == 0:
+            raise SystemExit(f"No {EXPERT} samples (candidates {stats.n_candidates}, "
+                             f"filter-rejected {stats.n_filter_rejected}) -- need more history")
+        policy = ctx.policy
+        alignment = alignment_block_for(
+            ctx, df, stats, expert=EXPERT, require_filter_pass=require_filter,
+            sample_policy=sample_policy,
+        )
+    else:
+        labels = args.labels or "data/processed/triple_barrier_labels.parquet"
+        df, policy, alignment = expert_dataset(labels, config, EXPERT)
 
-    df = df.sort_values("bar_index").reset_index(drop=True)
-
-    splitter = WalkForwardSplitter(
-        train_bars=min(backtest_cfg.get("train_bars", 5000), max(1, len(df) // 2)),
-        test_bars=min(backtest_cfg.get("test_bars", 500), max(1, len(df) // 4)),
-        step_bars=min(backtest_cfg.get("step_bars", 100), max(1, len(df) // 4)),
-        embargo_bars=backtest_cfg.get("embargo_bars", 50),
-    )
-    model, fold_metrics = train_and_validate(df, splitter)
-
-    favorable = df[df["label"] == 1]["realized_return_pct"]
-    unfavorable = df[df["label"] == 0]["realized_return_pct"]
-    payload = {
-        "model": model, "feature_names": FEATURE_NAMES, "granularity": data_granularity,
-        "feature_version": "v2_renamed",
-        "avg_favorable_return": float(favorable.mean()) if len(favorable) else 0.0,
-        "avg_unfavorable_return": float(unfavorable.mean()) if len(unfavorable) else 0.0,
-        "avg_adverse_excursion": float(df["max_adverse_excursion_pct"].mean()) if len(df) else 0.0,
-    }
-
-    output_path = Path(args.output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "wb") as f:
-        pickle.dump(payload, f)
-
-    model_card = {
-        "trained_at": datetime.now(timezone.utc).isoformat(), "granularity": data_granularity,
-        "n_samples": int(len(df)), "n_favorable": int((df["label"] == 1).sum()),
-        "n_unfavorable": int((df["label"] == 0).sum()),
-        "avg_favorable_return": payload["avg_favorable_return"],
-        "avg_unfavorable_return": payload["avg_unfavorable_return"],
-        "avg_adverse_excursion": payload["avg_adverse_excursion"],
-        "feature_names": FEATURE_NAMES, "walk_forward_folds": fold_metrics,
-    }
-    with open(output_path.with_suffix(".meta.json"), "w") as f:
-        json.dump(model_card, f, indent=2)
-
-    logger.info(f"Saved trend_expert model to {output_path}")
+    train_expert(EXPERT, FEATURE_NAMES, df, config, policy, alignment, args.output)
 
 
 if __name__ == "__main__":

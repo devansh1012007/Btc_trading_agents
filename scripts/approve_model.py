@@ -7,6 +7,7 @@ without changing the underlying registry.
 import argparse
 import json
 
+from src.labeling.hold_policy import ALIGNED_COMPONENTS
 from src.registry.model_registry import approve, get_champion, get_pending, reject
 
 
@@ -30,6 +31,9 @@ def main():
     parser.add_argument("--component", default=None, help="Limit to one component (default: all with pending versions)")
     parser.add_argument("--yes", action="store_true", help="Auto-confirm every prompt (non-interactive use, e.g. scripted approval)")
     parser.add_argument("--db-path", default="data/registry.db")
+    parser.add_argument("--force", action="store_true",
+                        help="Promote even a version that is NOT harness-aligned (trained under a "
+                             "different minimum-trade-duration policy, or before the contract existed)")
     args = parser.parse_args()
 
     pending = get_pending(component=args.component, db_path=args.db_path)
@@ -56,6 +60,17 @@ def main():
         clears = challenger_metrics.get("clears_promotion_margin")
         if clears is not None:
             print(f"  Clears configured promotion margin: {clears}")
+
+        aligned = challenger_metrics.get("alignment_ok")
+        if component in ALIGNED_COMPONENTS:
+            if aligned is True:
+                print("  Harness-aligned: yes (hold policy, population and horizon match the running config)")
+            else:
+                reason = challenger_metrics.get("alignment_problem") or "no alignment record (legacy version)"
+                print(f"  Harness-aligned: NO - {reason}")
+                if not args.force:
+                    print("  -> Refused. Retrain with scripts/retrain_all.py, or pass --force to override.")
+                    continue
 
         if args.yes:
             answer = "y"

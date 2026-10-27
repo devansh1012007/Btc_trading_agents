@@ -51,7 +51,7 @@ import shutil
 import sys
 import tempfile
 from dataclasses import replace as dc_replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -66,11 +66,14 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from run import OpenPosition, build_execution_engine, check_position_exit  # noqa: E402
+from run import OpenPosition, build_execution_engine, process_bar  # noqa: E402
 
+from src.evaluation.trade_duration import duration_report  # noqa: E402
+from src.labeling.harness_labels import LabelContext, entry_price_for  # noqa: E402
+from src.labeling.hold_policy import HoldPolicy, alignment_settings  # noqa: E402
 from src.labeling.triple_barrier import (  # noqa: E402
     barrier_volatility_pct,
-    compute_barrier_pcts,
+    barriers_for_regime,
     label_triple_barrier,
 )
 from src.layers.market_data import MarketDataLayer  # noqa: E402
@@ -101,6 +104,7 @@ from src.state.contracts import (  # noqa: E402
     RouterDecision,
 )
 from src.utils.config_helpers import load_layered_config  # noqa: E402
+from src.utils.synthetic import synthetic_ohlcv  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Baseline component swaps
@@ -226,7 +230,9 @@ class AutoApproveRiskLayer:
 # ---------------------------------------------------------------------------
 
 def _fresh_risk_layer(config: dict, tmp_dir: str) -> RiskLayer:
+    hold_policy, require_aligned = alignment_settings(config)
     return RiskLayer(
+        hold_policy=hold_policy, require_aligned_models=require_aligned,
         config=config.get("risk", {}),
         store=RiskStateStore(db_path=str(Path(tmp_dir) / "registry.db")),
         model_path=config.get("risk", {}).get("ml_model", {}).get("model_path"),
@@ -268,9 +274,6 @@ def run_full_stack_pass(df_ohlcv: pd.DataFrame, symbol: str, config: dict,
     fee_pct = config.get("labeling", {}).get("fee_pct", 0.04)
 
     snapshots = MarketDataLayer.batch_create_from_dataframe(df_ohlcv, symbol)
-    labeling_cfg = config.get("labeling", {})
-    max_holding_bars = labeling_cfg.get("max_holding_bars", 5)
-
     equity = initial_equity
     open_pos: Optional[OpenPosition] = None
     trades: List[dict] = []
@@ -279,103 +282,61 @@ def run_full_stack_pass(df_ohlcv: pd.DataFrame, symbol: str, config: dict,
     candidates: List[dict] = []   # expert-candidate records for calibration
     routed_pairs: List[Tuple[float, bool]] = []
 
+    current_idx = {"i": 0}
+
+    def on_open(position: OpenPosition) -> str:
+        return f"bt-{current_idx['i']}"
+
+    def on_close(position: OpenPosition, exit_timestamp: int, exit_info: dict) -> None:
+        win = exit_info["realized_pnl_pct"] > 0
+        if position.selection_confidence is not None:
+            routed_pairs.append((position.selection_confidence, win))
+        dt = datetime.fromtimestamp(position.entry_timestamp, tz=timezone.utc)
+        trades.append({
+            "entry_timestamp": position.entry_timestamp,
+            "exit_timestamp": exit_timestamp,
+            "expert": position.expert,
+            "regime": position.regime,
+            "direction": position.direction,
+            "size_usdt": position.size_usdt,
+            "entry_price": position.entry_price,
+            "pnl_pct": exit_info["realized_pnl_pct"],
+            "pnl_usdt": exit_info["realized_pnl_usdt"],
+            "exit_reason": exit_info["exit_reason"],
+            "bars_held": exit_info["bars_held"],
+            # Wall-clock fill-to-exit time: the number the minimum-trade-
+            # duration rule is measured on (src/labeling/hold_policy.py).
+            "hold_seconds": exit_info["hold_seconds"],
+            "min_hold_bars": position.min_hold_bars,
+            "hour_utc": dt.hour,
+            "day_of_week": dt.weekday(),
+            "selection_confidence": position.selection_confidence,
+            "risk_score": position.risk_score,
+        })
+
     try:
         for snap_idx, snapshot in enumerate(snapshots):
             state = pipeline.run_live_bar(snapshot)
             if state is None:
                 continue  # warmup
-            risk_layer.store.heartbeat()
+            current_idx["i"] = snap_idx
 
-            realized_pnl_this_bar = 0.0
-
-            # 1. Exits first — never gated by the Risk Layer (architecture).
-            if open_pos is not None:
-                exit_info = check_position_exit(open_pos, state.market_snapshot, fee_pct)
-                if exit_info is not None:
-                    risk_layer.store.record_trade_result(exit_info["realized_pnl_pct"],
-                                                         exit_info["realized_pnl_usdt"])
-                    equity += exit_info["realized_pnl_usdt"]
-                    dd = risk_layer.store.update_equity(equity)
-                    if dd >= risk_layer.breaker_cfg.get("max_drawdown_pct", 8.0):
-                        risk_layer.store.trip("max_drawdown", f"drawdown={dd:.2f}%")
-                    realized_pnl_this_bar = exit_info["realized_pnl_pct"]
-                    win = exit_info["realized_pnl_pct"] > 0
-                    if open_pos.selection_confidence is not None:
-                        routed_pairs.append((open_pos.selection_confidence, win))
-                    dt = datetime.fromtimestamp(open_pos.entry_timestamp, tz=timezone.utc)
-                    trades.append({
-                        "entry_timestamp": open_pos.entry_timestamp,
-                        "exit_timestamp": state.timestamp,
-                        "expert": open_pos.expert,
-                        "regime": open_pos.regime,
-                        "direction": open_pos.direction,
-                        "size_usdt": open_pos.size_usdt,
-                        "pnl_pct": exit_info["realized_pnl_pct"],
-                        "pnl_usdt": exit_info["realized_pnl_usdt"],
-                        "exit_reason": exit_info["exit_reason"],
-                        "hour_utc": dt.hour,
-                        "day_of_week": dt.weekday(),
-                        "selection_confidence": open_pos.selection_confidence,
-                        "risk_score": open_pos.risk_score,
-                    })
-                    open_pos = None
-
-            # 2. New entries — config-driven position cap (Phase 5 §6.3).
-            max_concurrent = int(risk_layer.breaker_cfg.get("max_concurrent_positions", 1))
-            if max_concurrent != 1:
-                raise ValueError(
-                    f"full-stack backtest requires max_concurrent_positions=1, got {max_concurrent}")
-
-            if open_pos is None and state.router_decision is not None:
-                risk_decision = risk_layer.evaluate(
-                    state.router_decision, state.expert_outputs, state.regime_state,
-                    state.zone_map, state.feature_vector, state.market_snapshot, equity,
-                )
-                state = dc_replace(state, risk_decision=risk_decision)
-
-                if risk_decision.approved:
-                    expert_output = state.expert_outputs.get_by_name(state.router_decision.selected_expert)
-                    try:
-                        execution_record = exec_engine.place_order(
-                            risk_decision, state.router_decision, expert_output, state.market_snapshot)
-                        risk_layer.store.record_execution_result(success=True)
-                    except Exception as e:
-                        logger.warning(f"Execution failed: {e}")
-                        risk_layer.store.record_execution_result(success=False)
-                        if risk_layer.store.consecutive_execution_errors() >= \
-                                risk_layer.breaker_cfg.get("consecutive_execution_errors_halt", 3):
-                            risk_layer.store.trip("consecutive_execution_errors", "3 consecutive failures")
-                        execution_record = None
-
-                    if execution_record is not None and execution_record.status in ("filled", "partial"):
-                        direction = 1 if execution_record.side == "BUY" else -1
-                        regime_key = state.regime_state.primary_regime.name
-                        overrides = labeling_cfg.get("regime_specific_barriers", {}).get(regime_key, {})
-                        k_tp = overrides.get("k_tp", labeling_cfg.get("k_tp", 1.5))
-                        k_sl = overrides.get("k_sl", labeling_cfg.get("k_sl", 1.0))
-                        tp_pct, sl_pct = compute_barrier_pcts(
-                            barrier_volatility_pct(state.feature_vector), k_tp, k_sl)
-                        risk_layer.record_trade(state.timestamp)
-                        open_pos = OpenPosition(
-                            trade_id=f"bt-{snap_idx}",
-                            entry_timestamp=state.timestamp,
-                            entry_price=execution_record.fill_price,
-                            direction=direction,
-                            size_usdt=execution_record.filled_size,
-                            take_profit_pct=tp_pct, stop_loss_pct=sl_pct,
-                            max_holding_bars=max_holding_bars,
-                            fees_paid=execution_record.filled_size * (execution_record.fees_pct / 100),
-                        )
-                        # extras carried alongside OpenPosition
-                        open_pos.expert = state.router_decision.selected_expert
-                        open_pos.regime = state.regime_state.primary_regime.value
-                        open_pos.selection_confidence = state.router_decision.selection_confidence
-                        open_pos.risk_score = risk_decision.risk_score
-
-                    state = dc_replace(state, execution_record=execution_record)
+            # The per-bar block -- exits first (never gated by the Risk
+            # Layer), then the single entry path, the lockout, the
+            # barriers -- is the SAME function the live loop, the
+            # historical loop and the GUI replay call. The harness used to
+            # carry its own copy; a rule added to one (the minimum trade
+            # duration) silently missed the other.
+            outcome = process_bar(
+                state, risk_layer=risk_layer, execution_engine=exec_engine,
+                position=open_pos, equity=equity, fee_pct=fee_pct, config=config,
+                on_trade_open=on_open, on_trade_close=on_close,
+            )
+            open_pos, equity = outcome.position, outcome.equity
+            state = outcome.state
 
             # Candidate harvesting for per-expert calibration (upstream of
-            # filter/router — every proposal gets an outcome sample).
+            # filter/router -- every proposal gets an outcome sample).
             if collect_expert_candidates and state.expert_outputs is not None:
                 fv = state.feature_vector
                 for out in state.expert_outputs.all():
@@ -388,12 +349,10 @@ def run_full_stack_pass(df_ohlcv: pd.DataFrame, symbol: str, config: dict,
                         "confidence": out.confidence,
                         "direction": 1 if out.action == ExpertAction.BUY else -1,
                         "entry_price": state.market_snapshot.close,
-                        "volatility_medium": fv.volatility_medium,
+                        "volatility_medium": barrier_volatility_pct(fv),
                         "regime": state.regime_state.primary_regime.name,
                     })
 
-            state = dc_replace(state, realized_pnl=realized_pnl_this_bar)
-            risk_layer.advance_bar()
             equity_curve.append(equity)
             bar_ts.append(state.timestamp)
     finally:
@@ -401,12 +360,12 @@ def run_full_stack_pass(df_ohlcv: pd.DataFrame, symbol: str, config: dict,
 
     return {
         "trades": trades,
+        "snapshots": snapshots,
         "equity_curve": equity_curve,
         "bar_ts": bar_ts,
         "candidates": candidates,
         "routed_pairs": routed_pairs,
         "final_equity": equity,
-        "snapshots": snapshots,
     }
 
 
@@ -416,29 +375,33 @@ def run_full_stack_pass(df_ohlcv: pd.DataFrame, symbol: str, config: dict,
 
 def label_expert_candidates(candidates: List[dict], snapshots: list,
                             config: dict) -> Dict[str, List[Tuple[float, bool]]]:
-    """Label every harvested candidate via triple-barrier on forward bars.
-    Independent of routing/filtering — fair per-expert reliability data."""
-    labeling_cfg = config.get("labeling", {})
-    fee_pct = labeling_cfg.get("fee_pct", 0.04)
-    max_hold = labeling_cfg.get("max_holding_bars", 5)
+    """Label every harvested candidate the way the harness would trade it.
+
+    Independent of routing/filtering -- fair per-expert reliability data --
+    but identical to a harness trade in everything else: simulated-fill
+    entry price, regime-specific barriers, the shared exit rule and the
+    minimum-hold lockout (``src/labeling/harness_labels.py``).
+    """
+    ctx = LabelContext.from_config(config)
+    max_hold = ctx.policy.max_holding_bars
     pairs: Dict[str, List[Tuple[float, bool]]] = {}
     for cand in candidates:
-        fwd = snapshots[cand["snapshot_index"] + 1:]
+        idx = cand["snapshot_index"]
+        fwd = snapshots[idx + 1: idx + 1 + max_hold]
         if not fwd:
             continue
-        regime_key = cand["regime"]
-        overrides = labeling_cfg.get("regime_specific_barriers", {}).get(regime_key, {})
-        k_tp = overrides.get("k_tp", labeling_cfg.get("k_tp", 1.5))
-        k_sl = overrides.get("k_sl", labeling_cfg.get("k_sl", 1.0))
-        tp, sl = compute_barrier_pcts(cand["volatility_medium"], k_tp, k_sl)
+        tp, sl = barriers_for_regime(config, cand["regime"], cand["volatility_medium"])
+        entry_price = entry_price_for(ctx, snapshots[idx], cand["direction"])
         try:
             outcome = label_triple_barrier(
-                forward_bars=fwd, entry_price=cand["entry_price"],
+                forward_bars=fwd, entry_price=entry_price,
                 direction=cand["direction"], take_profit_pct=tp, stop_loss_pct=sl,
-                max_holding_bars=max_hold, fee_pct=fee_pct,
-                entry_timestamp=cand["entry_timestamp"])
+                max_holding_bars=max_hold, fee_pct=ctx.fee_pct,
+                entry_timestamp=cand["entry_timestamp"], min_hold_bars=ctx.min_hold_bars)
         except ValueError:
             continue
+        if outcome.bars_held < ctx.min_hold_bars:
+            continue                      # data ended inside the lockout: no legal outcome
         pairs.setdefault(cand["expert"], []).append((cand["confidence"], outcome.realized_return_pct > 0))
     return pairs
 
@@ -514,22 +477,14 @@ def maybe_relax_liquidity(config: dict, relax: bool) -> dict:
 
 
 def generate_synthetic_ohlcv(n_bars: int, seed: int = 42) -> pd.DataFrame:
-    """Mixed-regime synthetic BTCUSDT (trend/chop/trend/panic-ish segments)."""
-    rng = np.random.default_rng(seed)
+    """Mixed-regime synthetic BTCUSDT (trend/chop/trend/panic-ish segments).
+
+    The generator itself lives in ``src/utils/synthetic.py`` (shared with
+    the latency benchmark and the Trade Map GUI); the harness's own
+    contract -- bars ending around "now" -- is just its start timestamp.
+    """
     start = datetime.now(timezone.utc).replace(second=0, microsecond=0)
-    timestamps = [(start + timedelta(minutes=i)).timestamp() for i in range(n_bars)]
-    price, rows = 50000.0, []
-    seg = n_bars // 4
-    for i in range(n_bars):
-        drift = 12.0 if i < seg else (-10.0 if i < 2 * seg else (2.0 if i < 3 * seg else -18.0))
-        vol = 8.0 if i >= 3 * seg else 5.0
-        price = max(price + rng.normal(drift, vol), 1000.0)
-        o = price + rng.normal(0, 3)
-        h = max(o, price) + abs(rng.normal(0, vol * 0.8))
-        low = min(o, price) - abs(rng.normal(0, vol * 0.8))
-        rows.append({"timestamp": timestamps[i], "open": o, "high": h, "low": low,
-                     "close": price, "volume": abs(rng.normal(120, 35))})
-    return pd.DataFrame(rows)
+    return synthetic_ohlcv(n_bars, seed=seed, start=start)
 
 
 def strip_regime_gating(config: dict) -> dict:
@@ -663,6 +618,9 @@ def run_backtest(df_ohlcv: pd.DataFrame, symbol: str, config: dict,
         "baselines": baselines,
         "baseline_verdicts": verdicts,
         "calibration": report_calibration,
+        # Minimum trade duration: measured on every trade the main pass took.
+        # ``passed`` is False if ANY trade was held shorter than the minimum.
+        "trade_duration": duration_report(main["trades"], HoldPolicy.from_config(config)),
         "success_criteria": success_criteria_check(aggregate, baselines["simple_momentum"]),
     }
     return report

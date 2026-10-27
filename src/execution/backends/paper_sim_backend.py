@@ -19,6 +19,7 @@ from ...state.contracts import (
     RouterDecision,
 )
 from ..execution_engine import ExecutionBackend, make_client_order_id, simulate_fill
+from ..execution_engine import total_slippage_pct as shared_total_slippage_pct
 
 logger = logging.getLogger(__name__)
 
@@ -58,13 +59,9 @@ class PaperSimBackend(ExecutionBackend):
         side = "BUY" if expert_output.action == ExpertAction.BUY else "SELL"
         depth_usdt = (market.bid_volume + market.ask_volume) * market.close
 
-        base_slippage_pct = self.config.get("slippage_pct", 0.01)
-
-        # --- simulated latency & adverse cost knobs ---
+        # --- simulated latency & adverse cost knobs (shared with the labeler) ---
         latency_ms = self.config.get("simulated_latency_ms", 0)
-        adverse_per_100ms = self.config.get("latency_adverse_pct_per_100ms", 0.0)
-        additional_slippage = (latency_ms / 100.0) * adverse_per_100ms if latency_ms > 0 else 0.0
-        total_slippage_pct = base_slippage_pct + additional_slippage
+        total_slippage_pct = shared_total_slippage_pct(self.config)
 
         fill_price, filled_size, fees_pct, slippage_realized, status = simulate_fill(
             side=side, mid=market.close, spread_pct=market.spread_pct,

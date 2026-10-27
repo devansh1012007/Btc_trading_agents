@@ -12,10 +12,9 @@ All functions here are pure: trades in, dicts out. No pipeline imports —
 this module is deliberately independent so tests can exercise it without
 constructing the stack.
 """
+import math
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
-
-import math
 
 import numpy as np
 
@@ -528,6 +527,29 @@ def render_markdown_report(report: dict) -> str:
                  f"{_fmt(b['avg_predicted_confidence'], '', 3)} | "
                  f"{_fmt(b['realized_win_rate_pct'], '', 1)} |")
     L.append("")
+
+    duration = report.get("trade_duration")
+    if duration:
+        overall = duration["overall"]
+        L.append("## Minimum Trade Duration")
+        L.append("")
+        L.append(f"Rule: no trade held shorter than {overall['min_trade_seconds']:g}s "
+                 f"(fill to exit). Shortest legal hold under this config: "
+                 f"{_fmt(duration.get('shortest_legal_hold_seconds'), 's', 1)}.")
+        L.append("")
+        L.append(f"**{'PASS' if duration['passed'] else 'FAIL'}** - "
+                 f"{overall['violations']} violation(s) across {overall['n']} trade(s).")
+        L.append("")
+        L.append("| Scope | Trades | Violations | Min | Median | P95 | Pinned to lockout |")
+        L.append("|---|---|---|---|---|---|---|")
+        L.append(f"| all | {overall['n']} | {overall['violations']} | "
+                 f"{_fmt(overall['min_s'], 's', 1)} | {_fmt(overall['median_s'], 's', 1)} | "
+                 f"{_fmt(overall['p95_s'], 's', 1)} | {_fmt(duration.get('pinned_rate'), '', 3)} |")
+        for name, row in sorted(duration.get("by_expert", {}).items()):
+            L.append(f"| {name} | {row['n']} | {row['violations']} | {_fmt(row['min_s'], 's', 1)} | "
+                     f"{_fmt(row['median_s'], 's', 1)} | {_fmt(row['p95_s'], 's', 1)} | "
+                     f"{_fmt(row.get('pinned_rate'), '', 3)} |")
+        L.append("")
 
     passed = sum(1 for c in report["success_criteria"] if c["pass"])
     L.append("---")

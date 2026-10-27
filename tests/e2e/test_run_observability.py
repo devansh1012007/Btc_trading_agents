@@ -179,25 +179,36 @@ def test_trade_journal_agrees_with_the_executed_bars(run_result):
     assert {t["entry_timestamp"] for t in trades} == executed_ts
 
 
-def test_the_gui_replay_and_the_runtime_agree_on_every_bar(run_result):
-    """The change set's central claim: the runtime and the GUI can never
-    disagree about why a bar stopped where it did.
-
-    Runs the SAME bars through the deployment entrypoint and through the
-    GUI's replay engine and compares the terminal stage of every bar.
-    """
-    _, work = run_result
-
+def _replayed_session(work: Path):
     from src.gui.artifacts import load_ohlcv
     from src.gui.replay import relax_liquidity, replay_session
     from src.utils.config_helpers import load_layered_config
 
-    runtime = {r["timestamp"]: r.get("terminal_stage") for r in _read_decisions(work)}
-
     bars = load_ohlcv(str(work / "bars.csv"))
     assert not bars.empty
     config = relax_liquidity(load_layered_config("paper"))
-    session = replay_session(bars, "BTC/USDT", config, relax=False)
+    return replay_session(bars, "BTC/USDT", config, relax=False)
+
+
+def _runtime_trades(work: Path) -> list:
+    conn = sqlite3.connect(work / "data" / "registry.db")
+    conn.row_factory = sqlite3.Row
+    rows = [dict(r) for r in conn.execute("SELECT * FROM trade_journal ORDER BY entry_timestamp")]
+    conn.close()
+    return rows
+
+
+def test_the_gui_replay_and_the_runtime_agree_on_every_bar(run_result):
+    """The change set's central claim: the runtime and the GUI can never
+    disagree about why a bar stopped where it did.
+
+    Both paths now run the SAME ``process_bar``, so this is a regression
+    guard on the wiring (callbacks, config, store), not the only thing
+    holding the two together. It compares the terminal stage of every bar.
+    """
+    _, work = run_result
+    runtime = {r["timestamp"]: r.get("terminal_stage") for r in _read_decisions(work)}
+    session = _replayed_session(work)
 
     gui = {
         int(ts): stage
@@ -208,8 +219,67 @@ def test_the_gui_replay_and_the_runtime_agree_on_every_bar(run_result):
 
     common = set(runtime) & set(gui)
     assert common, "the runtime and the GUI produced no bars in common"
+    assert set(runtime) == set(gui), "the two paths processed different bars"
     mismatches = {
         ts: (runtime[ts], gui[ts]) for ts in common if runtime[ts] != gui[ts]
     }
     assert not mismatches, f"the runtime and the GUI disagree on {len(mismatches)} bar(s): " \
         f"{dict(list(mismatches.items())[:5])}"
+
+
+def test_the_gui_replay_and_the_runtime_agree_on_the_trade_list(run_result):
+    """Same bars in -> the same trades out: entry, exit, price, reason, PnL."""
+    _, work = run_result
+    session = _replayed_session(work)
+    runtime = _runtime_trades(work)
+
+    gui = session.trades.sort_values("entry_timestamp").reset_index(drop=True)
+    assert len(runtime) == len(gui), (
+        f"the runtime journalled {len(runtime)} trades, the GUI replayed {len(gui)}"
+    )
+
+    for journal, replayed in zip(runtime, gui.to_dict("records"), strict=True):
+        assert journal["entry_timestamp"] == replayed["entry_timestamp"]
+        assert journal["direction"] == replayed["direction"]
+        assert journal["entry_price"] == pytest.approx(replayed["entry_price"])
+        assert journal["size"] == pytest.approx(replayed["size"])
+        assert journal["expert_used"] == replayed["expert"]
+        assert journal["regime_at_entry"] == replayed["regime"]
+        if replayed["exit_reason"] == "open":
+            assert journal["exit_timestamp"] is None
+            continue
+        assert journal["exit_timestamp"] == replayed["exit_timestamp"]
+        assert journal["exit_reason"] == replayed["exit_reason"]
+        assert journal["exit_price"] == pytest.approx(replayed["exit_price"])
+        assert journal["realized_pnl_usdt"] == pytest.approx(replayed["pnl_usdt"])
+        assert journal["realized_pnl_pct"] == pytest.approx(replayed["pnl_pct"])
+
+
+def test_the_gui_replay_and_the_runtime_agree_on_the_equity_curve(run_result):
+    """The equity at every bar -- not just the final number -- must match.
+
+    The runtime writes no equity curve, so it is rebuilt from the trade
+    journal: initial equity plus the realised PnL of every trade that had
+    exited by that bar.
+    """
+    _, work = run_result
+    session = _replayed_session(work)
+    initial = float(session.meta["initial_equity"])
+
+    exits = sorted(
+        (t["exit_timestamp"], t["realized_pnl_usdt"])
+        for t in _runtime_trades(work)
+        if t["exit_timestamp"] is not None
+    )
+
+    equity = initial
+    cursor = 0
+    mismatches = []
+    for ts, gui_equity in zip(session.equity["timestamp"], session.equity["equity"], strict=True):
+        while cursor < len(exits) and exits[cursor][0] <= ts:
+            equity += exits[cursor][1]
+            cursor += 1
+        if abs(equity - gui_equity) > 1e-6 * max(1.0, abs(equity)):
+            mismatches.append((int(ts), equity, float(gui_equity)))
+    assert not mismatches, f"equity curves differ on {len(mismatches)} bar(s): {mismatches[:3]}"
+    assert session.meta["final_equity"] == pytest.approx(equity)

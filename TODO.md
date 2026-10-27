@@ -78,3 +78,21 @@ scratch notes live in `docs/todo.md`; this file is the engineering queue.
 *Rule of the road (PRESENTATION §28): never publish a number that wasn't
 produced by a command in this repo, with its config hash + git commit in
 `data/registry.db::experiments`.*
+
+## Trade Map GUI — deferred work this feature surfaced
+
+- [ ] Live follow mode: tail a running session's decisions as they arrive
+      (the app shows a completed session; it does not auto-refresh).
+- [ ] Zone edges: log the zone's upper/lower bound with each lifecycle
+      event so the GUI can draw boxes instead of levels.
+- [ ] Write an equity curve from the deployment loop so artifacts sessions
+      stop deriving it from the journal.
+- [ ] Record the `symbol` on trade-journal rows (multi-symbol journals are
+      currently unfiltered).
+- [ ] A multi-symbol comparison view.
+- [ ] Greeks panel for options (needs an IV / chain source).
+- [ ] Screenshot of the app for README (`docs/images/trade_map.png`).
+- [ ] Measure and record the Phase 1.5 numbers (900-bar replay time, suite
+      time, 5-minute ruff/mypy counts) on a real machine — this change set
+      was written without running the test suite.
+

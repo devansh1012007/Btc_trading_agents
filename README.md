@@ -176,6 +176,29 @@ docs/                      design-decisions/ (ADRs), explain/ (deep dives),
 data/                      gitignored: raw/, models/, logs/, reports/, registry.db
 ```
 
+## Trade Map GUI
+
+An interactive view of **exactly where the system took trades, and why** —
+TradingView-style candles at any timeframe the system supports, with entries,
+exits, TP/SL levels, per-bar decisions (coloured by the stage that stopped the
+bar), zones, regimes and equity, plus a "why did this bar (not) trade?" panel
+that walks the stage-by-stage trace.
+
+```bash
+pip install -e ".[viz]"
+make trade-map            # http://127.0.0.1:8572  (TRADE_MAP_PORT overrides)
+make trade-map-export     # one self-contained HTML file, opens offline
+```
+
+Data comes from live artifacts first, then a replay of the raw OHLCV, then a
+synthetic demo (always labelled illustrative). It is a viewer: it never places
+an order and never writes to `data/`. See
+[`docs/explain/trade-map-gui.md`](docs/explain/trade-map-gui.md) and, for what
+it does *not* show, [`docs/limitations.md`](docs/limitations.md).
+
+> Screenshot: run `make trade-map` (synthetic source) and save one to
+> `docs/images/trade_map.png` — none is committed yet.
+
 ## Limitations
 
 Honest list in [`docs/limitations.md`](docs/limitations.md): non-stationarity,

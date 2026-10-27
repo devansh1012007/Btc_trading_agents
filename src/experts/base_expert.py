@@ -13,6 +13,7 @@ from typing import Dict, Optional, Tuple
 
 import numpy as np
 
+from ..labeling.hold_policy import POPULATION_EXPERT_GATE, HoldPolicy, model_alignment_problem
 from ..state.contracts import (
     FEATURE_SCHEMA_VERSION,
     ExpertAction,
@@ -39,9 +40,16 @@ def compute_invalidation_distance(fv: FeatureVector, direction: int) -> Tuple[fl
 class BaseExpert(ABC):
     expert_name: str = "base_expert"
 
-    def __init__(self, config: dict, model_path: Optional[str] = None, data_granularity: str = "1m"):
+    def __init__(
+        self, config: dict, model_path: Optional[str] = None, data_granularity: str = "1m",
+        hold_policy: Optional[HoldPolicy] = None, require_aligned_models: bool = False,
+    ):
         self.config = config
         self.data_granularity = data_granularity
+        # The minimum-trade-duration contract (src/labeling/hold_policy.py).
+        # ``None`` (an expert built without a config) disables the checks.
+        self.hold_policy = hold_policy
+        self.require_aligned_models = require_aligned_models
 
         self._model = None
         self._model_feature_names = None
@@ -82,6 +90,22 @@ class BaseExpert(ABC):
             )
             return
 
+        # A model is only served under the contract it was TRAINED under:
+        # same minimum hold, same horizon, same population. Anything else
+        # (including a legacy model with no contract) would be scoring a
+        # trade the harness does not take -- fall back to the rule instead.
+        problem = model_alignment_problem(
+            payload, self.hold_policy, require_aligned=self.require_aligned_models,
+            expected_population=POPULATION_EXPERT_GATE,
+        )
+        if problem is not None:
+            logger.warning(
+                f"[{self.expert_name}] Model at {p} is not aligned with the running harness "
+                f"({problem}). Falling back to rule-based mode. "
+                f"Retrain with scripts/train_{self.expert_name}.py."
+            )
+            return
+
         self._model = payload["model"]
         self._model_feature_names = payload["feature_names"]
         self._avg_favorable_return = payload.get("avg_favorable_return")
@@ -114,8 +138,21 @@ class BaseExpert(ABC):
     def score(self, fv: FeatureVector, zones: ZoneMap, regime: RegimeState, direction: int) -> ExpertOutput:
         raise NotImplementedError
 
+    @property
+    def duration_blocked_reason(self) -> Optional[str]:
+        """Why this expert must not propose ANY trade (None = it may).
+
+        Fail closed: with an unsatisfiable hold policy (e.g. a timeout
+        shorter than the minimum hold) every trade the expert proposed
+        would be illegal, so it proposes none.
+        """
+        if self.hold_policy is None:
+            return None
+        problems = self.hold_policy.problems()
+        return "; ".join(problems) if problems else None
+
     def evaluate(self, fv: FeatureVector, zones: ZoneMap, regime: RegimeState) -> ExpertOutput:
-        direction = self.propose_candidate(fv, zones, regime)
+        direction = None if self.duration_blocked_reason else self.propose_candidate(fv, zones, regime)
         if direction is None:
             return ExpertOutput(
                 expert_name=self.expert_name, timestamp=fv.timestamp, symbol=fv.symbol,

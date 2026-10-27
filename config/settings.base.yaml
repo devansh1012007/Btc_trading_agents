@@ -87,6 +87,26 @@ labeling:
       k_sl: 0.5
 
 ###############################################################################
+# MINIMUM TRADE DURATION (docs/explain/min-trade-duration.md)
+###############################################################################
+# No trade may be held shorter than min_trade_seconds, measured in wall-clock
+# time from the FILL to the EXIT. Enforced in ONE place (src/labeling/
+# hold_policy.py) for every consumer: the training labeler (exits cannot occur
+# inside the lockout), check_position_exit (the harness, the live loop and the
+# GUI replay), and every model loader (a model trained under a different
+# policy is not served). 0 disables the rule.
+trade_duration:
+  min_trade_seconds: 10
+  # Seconds between the signal bar and the actual fill. null -> use
+  # execution.simulated_latency_ms / 1000 (what the paper simulator charges).
+  # Set it for live trading (live backends stamp the fill with the bar label,
+  # so they measure no latency of their own).
+  assumed_entry_latency_seconds: null
+  # Serve a model only if it carries a matching `training_alignment` contract.
+  # true => legacy models trained before this rule fall back to rule-based mode.
+  require_aligned_models: true
+
+###############################################################################
 # EXPERT LAYER (Phase 3, §6)
 ###############################################################################
 experts:

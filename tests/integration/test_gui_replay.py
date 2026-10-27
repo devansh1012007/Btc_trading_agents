@@ -6,6 +6,7 @@ same risk layer, same paper-sim execution, same position lifecycle. This
 test pins that down: the replay must produce the same trades as the
 backtest harness, and it must not touch the production registry.
 """
+import dataclasses
 import sys
 from pathlib import Path
 
@@ -121,23 +122,11 @@ def test_replay_never_places_a_live_order(config, monkeypatch):
     assert not session.trades.empty, "expected the replay to take trades"
 
 
-def test_a_position_still_open_at_the_end_is_still_reported(config):
+def test_a_position_still_open_at_the_end_is_still_reported(hold_config):
     """A trade that never closed is a trade the GUI must still show --
     with an entry marker and no exit marker."""
-    # Unreachable barriers (and no regime-specific overrides) keep the
-    # first position open for the whole session.
-    hold = {
-        **config,
-        "labeling": {
-            **config.get("labeling", {}),
-            "max_holding_bars": 10_000,
-            "k_tp": 1000.0,
-            "k_sl": 1000.0,
-            "regime_specific_barriers": {},
-        },
-    }
     bars = synthetic_ohlcv(900, seed=42)
-    session = replay_session(bars, "BTC/USDT", hold, relax=True)
+    session = replay_session(bars, "BTC/USDT", hold_config, relax=True)
 
     assert not session.trades.empty
     open_rows = session.trades[session.trades["exit_reason"] == "open"]
@@ -173,25 +162,15 @@ def test_synthetic_ohlcv_is_deterministic():
     assert not a.equals(c)
 
 
-def test_gui_replay_labels_a_position_open_bar_as_position_open(config):
+def test_gui_replay_labels_a_position_open_bar_as_position_open(hold_config):
     """A bar that happened while a position was open must say so.
 
     The runtime says "position already open"; if the GUI says
     "no expert candidate" it is naming a stage that had nothing to do
     with why the bar did not trade.
     """
-    hold = {
-        **config,
-        "labeling": {
-            **config.get("labeling", {}),
-            "max_holding_bars": 10_000,
-            "k_tp": 1000.0,
-            "k_sl": 1000.0,
-            "regime_specific_barriers": {},
-        },
-    }
     bars = synthetic_ohlcv(900, seed=42)
-    session = replay_session(bars, "BTC/USDT", hold, relax=True)
+    session = replay_session(bars, "BTC/USDT", hold_config, relax=True)
 
     open_rows = session.trades[session.trades["exit_reason"] == "open"]
     assert len(open_rows) == 1
@@ -229,15 +208,7 @@ def test_gui_replay_never_reports_an_unfilled_order_as_a_trade(config, monkeypat
 
         def reject(*args, **kwargs):
             record = place_order(*args, **kwargs)
-            return type(record)(
-                timestamp=record.timestamp, order_timestamp=record.order_timestamp,
-                fill_timestamp=record.fill_timestamp, symbol=record.symbol,
-                side=record.side, order_price=record.order_price,
-                fill_price=record.fill_price, requested_size=record.requested_size,
-                filled_size=0.0, slippage_pct=record.slippage_pct,
-                fees_pct=record.fees_pct, total_cost_pct=record.total_cost_pct,
-                status="rejected", order_id=record.order_id,
-            )
+            return dataclasses.replace(record, status="rejected", filled_size=0.0)
 
         monkeypatch.setattr(backend, "place_order", reject)
         return engine
@@ -370,3 +341,23 @@ def test_gui_replay_reports_a_raised_order_as_execution_failed(config, monkeypat
     assert len(failed) > 0, "the GUI never reported a failed execution"
     assert all(failed["decision"] == "NO_TRADE")
     assert any("exchange unreachable" in str(r) for r in failed["terminal_reason"])
+
+
+def test_a_900_bar_replay_is_not_sqlite_bound(config):
+    """Phase 1.5 acceptance: the replay used to spend 63% of its time in
+    SQLite (a new connection, the schema DDL and a commit per risk-store
+    call). With the in-memory store and the pooled registry connection a
+    900-bar replay must stay inside the budget.
+
+    The budget is the plan's 3 s; ``REPLAY_BUDGET_SECONDS`` overrides it
+    on a slow machine without editing the test.
+    """
+    import os
+    import time
+
+    budget = float(os.environ.get("REPLAY_BUDGET_SECONDS", "3.0"))
+    bars = synthetic_ohlcv(900, seed=42)
+    started = time.perf_counter()
+    replay_session(bars, "BTC/USDT", config, relax=True, synthetic=True)
+    elapsed = time.perf_counter() - started
+    assert elapsed < budget, f"a 900-bar replay took {elapsed:.1f}s (budget {budget:.1f}s)"

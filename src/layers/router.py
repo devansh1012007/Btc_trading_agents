@@ -13,6 +13,7 @@ from typing import Dict, Optional
 
 import numpy as np
 
+from ..labeling.hold_policy import HoldPolicy, model_alignment_problem
 from ..state.contracts import (
     FEATURE_SCHEMA_VERSION,
     ExpertAction,
@@ -57,7 +58,12 @@ def build_features(
 
 
 class Router:
-    def __init__(self, config: dict, model_path: Optional[str] = None, data_granularity: str = "1m"):
+    def __init__(
+        self, config: dict, model_path: Optional[str] = None, data_granularity: str = "1m",
+        hold_policy: Optional[HoldPolicy] = None, require_aligned_models: bool = False,
+    ):
+        self.hold_policy = hold_policy
+        self.require_aligned_models = require_aligned_models
         self.config = config
         self.data_granularity = data_granularity
         self.fallback_cfg = config.get("fallback_behavior", {})
@@ -97,6 +103,17 @@ class Router:
             logger.warning(
                 f"Router model trained on feature_schema={trained_feature_version}, "
                 f"current schema={FEATURE_SCHEMA_VERSION}. Falling back to confidence-based mode."
+            )
+            return
+
+
+        problem = model_alignment_problem(
+            payload, self.hold_policy, require_aligned=self.require_aligned_models,
+        )
+        if problem is not None:
+            logger.warning(
+                f"Router model at {p} is not aligned with the running harness ({problem}). "
+                f"Falling back to confidence-based mode. Retrain with scripts/train_router.py."
             )
             return
 

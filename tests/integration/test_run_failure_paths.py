@@ -13,6 +13,7 @@ The tests drive the real ``run_historical`` loop with a stubbed
 execution engine, in an isolated working directory, so nothing touches
 the repository's ``data/``.
 """
+import dataclasses
 import importlib.util
 import json
 import sys
@@ -144,15 +145,7 @@ def test_a_rejected_order_is_not_reported_as_a_trade(run_module, config, tmp_pat
             record = super().place_order(
                 risk_decision, router_decision, expert_output, market_snapshot, **kwargs
             )
-            return type(record)(
-                timestamp=record.timestamp, order_timestamp=record.order_timestamp,
-                fill_timestamp=record.fill_timestamp, symbol=record.symbol,
-                side=record.side, order_price=record.order_price,
-                fill_price=record.fill_price, requested_size=record.requested_size,
-                filled_size=0.0, slippage_pct=record.slippage_pct,
-                fees_pct=record.fees_pct, total_cost_pct=record.total_cost_pct,
-                status="rejected", order_id=record.order_id,
-            )
+            return dataclasses.replace(record, status="rejected", filled_size=0.0)
 
     engine = ExecutionEngine(_RejectingBackend({}, fee_pct=0.04), "paper_sim")
 
@@ -194,15 +187,7 @@ def test_a_rejected_order_does_not_reach_the_trade_journal(run_module, config, t
             record = super().place_order(
                 risk_decision, router_decision, expert_output, market_snapshot, **kwargs
             )
-            return type(record)(
-                timestamp=record.timestamp, order_timestamp=record.order_timestamp,
-                fill_timestamp=record.fill_timestamp, symbol=record.symbol,
-                side=record.side, order_price=record.order_price,
-                fill_price=record.fill_price, requested_size=record.requested_size,
-                filled_size=0.0, slippage_pct=record.slippage_pct,
-                fees_pct=record.fees_pct, total_cost_pct=record.total_cost_pct,
-                status="rejected", order_id=record.order_id,
-            )
+            return dataclasses.replace(record, status="rejected", filled_size=0.0)
 
     engine = ExecutionEngine(_RejectingBackend({}, fee_pct=0.04), "paper_sim")
     bars = synthetic_ohlcv(900, seed=42)
@@ -256,14 +241,18 @@ def test_the_open_position_carries_its_provenance(run_module, config, tmp_path, 
     journal is filled from a separate call, so a journal-only assertion
     would not notice the position losing its provenance.
     """
+    import src.execution.position_lifecycle as lifecycle
+
     captured = []
-    original = run_module.check_position_exit
+    original = lifecycle.check_position_exit
 
     def capture(position, bar, fee_pct):
         captured.append(position)
         return original(position, bar, fee_pct)
 
-    monkeypatch.setattr(run_module, "check_position_exit", capture)
+    # ``process_bar`` (the one per-bar implementation) looks the exit
+    # check up in its own module, so that is where it is intercepted.
+    monkeypatch.setattr(lifecycle, "check_position_exit", capture)
 
     bars = synthetic_ohlcv(900, seed=42)
     _run(run_module, config, bars, None, tmp_path)

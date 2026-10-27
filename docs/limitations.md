@@ -62,3 +62,41 @@ honest list; the failure-handling mechanics live in
   campaign is a prerequisite before any live capital (tracked in `TODO.md`).
 - **Small-scale latency figures** (~1 ms/bar) come from the synthetic
   benchmark harness on developer hardware, not from production load.
+
+## Trade Map GUI
+
+What the GUI does **not** show, stated rather than implied:
+
+- **No Greeks, no volatility surface.** Options are drawn as a price chart
+  plus contract metadata (strike, expiry, type, multiplier); there is no
+  Greeks UI.
+- **No order-book depth.** The bars are OHLCV; liquidity is the synthetic
+  proxy or a logged sample, never a depth ladder.
+- **One symbol at a time.** There is no multi-symbol comparison view.
+- **Replayed sessions use a throw-away risk store.** A replay's circuit
+  breakers are in-memory and start clean, so a replay cannot reproduce a
+  halt that a long-running production session had already tripped.
+- **Equity from artifacts is derived.** The runtime writes no equity curve;
+  the GUI rebuilds it from the trade journal (initial equity + realised
+  PnL), so it ignores unrealised PnL between entry and exit.
+- **Zones are levels, not boxes.** The zone log stores a price level per
+  event, not the zone's edges; the GUI draws a level from creation to the
+  event that ended it and invents no bounds.
+- **A higher-timeframe candle shows the decision that got furthest in it**
+  (``executed`` beats ``risk_layer`` beats ``opportunity_filter``...); the
+  per-bar view (the "why" panel) is always at the base granularity.
+- **Relaxed or synthetic sessions say nothing about edge.** The GUI labels
+  them loudly; do not read expectancy from them.
+
+## Minimum trade duration
+
+- **No model has been trained under the new contract.** Existing pickles are
+  legacy; with `require_aligned_models: true` they fall back to rule-based mode
+  until `scripts/retrain_all.py` produces aligned versions.
+- **Intrabar timing is not observable.** The 10 s rule is enforced on bar
+  boundaries plus modelled latency. Live fills are stamped with the bar label, so
+  live entry latency is the configured assumption, not a measurement.
+- **The labeler is one expert at a time.** Router selection and the risk layer's
+  size/veto are not replayed per sample; `evaluate_training_alignment.py`
+  quantifies the remaining gap.
+

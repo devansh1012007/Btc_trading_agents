@@ -35,6 +35,30 @@ def make_client_order_id(timestamp: int, symbol: str, side: str, size: float) ->
     return hashlib.sha256(raw.encode()).hexdigest()[:32]
 
 
+def entry_fill_price(side: str, mid: float, spread_pct: float, slippage_pct: float) -> float:
+    """Price an order of ``side`` fills at: mid +/- half the spread +/- slippage.
+
+    The ONE entry-price model. ``simulate_fill`` (the paper backends) and
+    the training labeler (``src/labeling/harness_labels.py``) both call it,
+    so a label's entry price is the price the harness would have paid.
+    """
+    spread_frac = spread_pct / 100
+    if side == "BUY":
+        return mid * (1 + spread_frac / 2 + slippage_pct / 100)
+    return mid * (1 - spread_frac / 2 - slippage_pct / 100)
+
+
+def total_slippage_pct(exec_cfg: dict) -> float:
+    """Slippage (%) the paper simulator charges: the base slippage plus the
+    adverse move over the simulated latency. Shared with the training
+    labeler so a label pays the slippage the harness pays."""
+    base = exec_cfg.get("slippage_pct", 0.01)
+    latency_ms = exec_cfg.get("simulated_latency_ms", 0)
+    adverse_per_100ms = exec_cfg.get("latency_adverse_pct_per_100ms", 0.0)
+    additional = (latency_ms / 100.0) * adverse_per_100ms if latency_ms > 0 else 0.0
+    return base + additional
+
+
 def simulate_fill(
     side: str, mid: float, spread_pct: float, slippage_pct: float,
     depth_usdt: float, requested_size_usdt: float, fee_pct: float,
@@ -48,11 +72,7 @@ def simulate_fill(
 
     Returns (fill_price, filled_size_usdt, fees_pct, slippage_realized_pct, status).
     """
-    spread_frac = spread_pct / 100
-    if side == "BUY":
-        fill_price = mid * (1 + spread_frac / 2 + slippage_pct / 100)
-    else:
-        fill_price = mid * (1 - spread_frac / 2 - slippage_pct / 100)
+    fill_price = entry_fill_price(side, mid, spread_pct, slippage_pct)
 
     max_fillable_usdt = depth_usdt * participation_cap
     if market_fill_remainder:
