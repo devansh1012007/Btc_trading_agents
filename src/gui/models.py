@@ -245,6 +245,10 @@ class SessionBundle:
     equity: pd.DataFrame = field(default_factory=lambda: empty_frame(EQUITY_COLUMNS))
     states: Dict[int, SystemState] = field(default_factory=dict)
     meta: Dict[str, Any] = field(default_factory=dict)
+    model_scorecards: Dict[str, Any] = field(default_factory=dict)
+    halts: List[Dict[str, Any]] = field(default_factory=list)
+    cooldowns: List[Dict[str, Any]] = field(default_factory=list)
+    tick_window: pd.DataFrame = field(default_factory=pd.DataFrame)
 
     def __setattr__(self, name: str, value: Any) -> None:
         # The lookup indexes below are derived from ``decisions`` and

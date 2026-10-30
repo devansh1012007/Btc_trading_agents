@@ -161,14 +161,15 @@ def replay_session(
 
     spec = instrument or resolve_instrument(symbol)
 
-    tmp_dir = tempfile.mkdtemp(prefix="gui_replay_")
+    tmp_dir = tempfile.mkdtemp(prefix="gui_replay_", dir="/tmp")
 
     # The pipeline creates its data directories on construction. Point
     # them at the replay's throw-away directory: a viewer must not
     # scatter directories into whatever directory it was launched from.
     pipeline = TradingPipeline(symbol=symbol, config=cfg, data_dir=f"{tmp_dir}/data")
     data_granularity = cfg.get("system", {}).get("data_granularity", "1m")
-    fee_pct = cfg.get("labeling", {}).get("fee_pct", 0.04)
+    from ..execution.cost_model import CostModel
+    fee_pct = CostModel.from_config(cfg).fee_pct("entry")
 
     try:
         hold_policy, require_aligned = alignment_settings(cfg)
@@ -220,7 +221,25 @@ def replay_session(
 
             ts = outcome.state.timestamp
             decisions.append(_decision_row(outcome))
-            traces[ts] = asdict(outcome.trace)
+            tr = outcome.trace
+            traces[ts] = {
+                "timestamp": tr.timestamp,
+                "symbol": tr.symbol,
+                "stages": [
+                    {
+                        "stage_name": s.stage_name,
+                        "passed": s.passed,
+                        "detail": s.detail,
+                        "values": dict(s.values),
+                        "duration_ms": s.duration_ms,
+                    }
+                    for s in tr.stages
+                ],
+                "terminal_stage": tr.terminal_stage,
+                "terminal_reason": tr.terminal_reason,
+                "total_duration_ms": tr.total_duration_ms,
+                "stage_timings_ms": dict(tr.stage_timings_ms) if tr.stage_timings_ms is not None else None,
+            }
             states[ts] = outcome.state
             equity_curve.append((ts, equity))
             if progress is not None and (done % 25 == 0 or done == total):

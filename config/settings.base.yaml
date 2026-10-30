@@ -338,3 +338,21 @@ storage:
 logging:
   level: "INFO"
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+###############################################################################
+# PIPELINE ORDER & STAGE SWITCHES (Phase 1, default = legacy)
+###############################################################################
+pipeline:
+  order: "legacy"                    # "legacy" | "staged" (router -> opportunity_confirm)
+
+###############################################################################
+# EXTERNAL AGENT HANDOFF ENDPOINT (Phase 14 / D9, default = off)
+###############################################################################
+handoff:
+  mode: "off"                        # "off" | "shadow" | "advisory" | "execute"
+  transport: "http_webhook"          # "http_webhook" | "subprocess" | "file_queue" | "in_memory"
+  endpoint_url: "http://127.0.0.1:8590/v1/signals"
+  timeout_ms: 1500
+  on_error: "fail_closed"            # "fail_closed" | "fallback_internal"
+  secret_env_var: "BTC_BOT_AGENT_SECRET"
+  verify_response_signature: false

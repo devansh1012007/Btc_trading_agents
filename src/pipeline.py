@@ -44,6 +44,7 @@ from src.layers.router import Router
 from src.layers.structural_features import attach_structural_features
 from src.layers.structure_engine import DynamicStructureEngine
 from src.liquidity.synthetic_liquidity_model import attach_synthetic_liquidity
+from src.pipeline_stages import decision_trace_stage_order, get_stages
 from src.state.contracts import MarketSnapshot, SystemState
 from src.state.serialization import system_state_to_dict
 
@@ -93,6 +94,9 @@ class TradingPipeline:
         self.liquidity_cfg = self.config.get("liquidity", {}).get("synthetic", {})
 
         self.data_granularity = system_cfg.get("data_granularity", "1m")
+        self.pipeline_order = (self.config.get("pipeline", {}) or {}).get("order", "legacy")
+        self.stages = get_stages(self.pipeline_order)
+        self.trace_stage_order = decision_trace_stage_order(self.pipeline_order)
         self.connector = CCXTConnector(
             system_cfg.get("exchange", exchange_name), system_cfg.get("sandbox", sandbox)
         )
@@ -127,11 +131,13 @@ class TradingPipeline:
         experts = build_experts(self.config, data_granularity=self.data_granularity)
         self.expert_layer = ExpertLayer(experts)
 
+        from src.execution.cost_model import CostModel
         self.opportunity_filter = OpportunityFilter(
             config=opp_cfg, labeling_config=labeling_cfg,
             model_path=opp_cfg.get("ml_model", {}).get("model_path"),
             data_granularity=self.data_granularity,
             hold_policy=hold_policy, require_aligned_models=require_aligned,
+            cost_model=CostModel.from_config(self.config),
         )
 
         self.router = Router(
@@ -201,13 +207,37 @@ class TradingPipeline:
         expert_outputs = self.expert_layer.evaluate(fv, zone_map, regime_state)
         self._timings["expert_layer_ms"] = (self._perf() - t) * 1000
 
-        t = self._perf()
-        opportunity_score = self.opportunity_filter.evaluate(expert_outputs, regime_state, zone_map, snapshot, fv)
-        self._timings["opportunity_filter_ms"] = (self._perf() - t) * 1000
+        if self.pipeline_order == "staged":
+            t = self._perf()
+            pre_score = self.opportunity_filter.evaluate_pre_filter(regime_state, zone_map, snapshot, fv)
+            t_pre = (self._perf() - t) * 1000
 
-        t = self._perf()
-        router_decision = self.router.decide(expert_outputs, regime_state, zone_map, opportunity_score)
-        self._timings["router_ms"] = (self._perf() - t) * 1000
+            t = self._perf()
+            router_decision = self.router.decide(expert_outputs, regime_state, zone_map, pre_score)
+            self._timings["router_ms"] = (self._perf() - t) * 1000
+
+            t = self._perf()
+            opportunity_score = self.opportunity_filter.evaluate_confirm(
+                expert_outputs, router_decision, regime_state, zone_map, snapshot, fv,
+            )
+            self._timings["opportunity_filter_ms"] = t_pre + (self._perf() - t) * 1000
+            if not opportunity_score.tradable and router_decision.selected_expert != "no_trade":
+                from dataclasses import replace as dc_replace
+                router_decision = dc_replace(
+                    router_decision,
+                    selected_expert="no_trade",
+                    selection_confidence=1.0 - opportunity_score.tradable_probability,
+                    no_trade_probability=1.0,
+                    reasoning="opportunity_filter_rejected",
+                )
+        else:
+            t = self._perf()
+            opportunity_score = self.opportunity_filter.evaluate(expert_outputs, regime_state, zone_map, snapshot, fv)
+            self._timings["opportunity_filter_ms"] = (self._perf() - t) * 1000
+
+            t = self._perf()
+            router_decision = self.router.decide(expert_outputs, regime_state, zone_map, opportunity_score)
+            self._timings["router_ms"] = (self._perf() - t) * 1000
         self._timings["decisions_ms"] = (
             self._timings["expert_layer_ms"]
             + self._timings["opportunity_filter_ms"]

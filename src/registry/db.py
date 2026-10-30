@@ -1,21 +1,25 @@
 """
-Shared SQLite connection + schema for everything that needs transactional
-read-modify-write state (Phase 4, §7.4): circuit breaker counters, the
-trade journal, the model registry, and idempotent order tracking. One
-file (data/registry.db), one schema, one place every other Phase 4 module
-gets a connection from -- avoids four modules each hand-rolling their own
-sqlite3.connect() and CREATE TABLE IF NOT EXISTS.
+Shared SQLite connection + schema + versioned migrations for everything that
+needs transactional read-modify-write state (Phase 4, §7.4; Phase 1, T1.4):
+circuit breaker counters, the trade journal, the model registry, model bundles,
+the model prediction ledger, and idempotent order tracking.
+
+Migrations use SQLite's `PRAGMA user_version` inside a single transaction,
+backing up existing file-backed databases to `<path>.bak.<from_version>`
+before applying schema upgrades, so both a fresh database and an existing
+HEAD `registry.db` converge to the exact same schema without data loss.
 """
 import hashlib
 import json
 import logging
 import os
+import shutil
 import sqlite3
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional, Tuple
 
 import yaml
 
@@ -98,17 +102,107 @@ CREATE TABLE IF NOT EXISTS experiments (
 );
 """
 
+#: Versioned migrations applied on top of migration 0 (SCHEMA).
+#: Each entry is (target_version, list_of_sql_statements).
+MIGRATIONS: List[Tuple[int, List[str]]] = [
+    (
+        1,
+        [
+            "ALTER TABLE trade_journal ADD COLUMN exit_source TEXT",
+            "ALTER TABLE trade_journal ADD COLUMN hold_seconds REAL",
+            "ALTER TABLE trade_journal ADD COLUMN regime_id TEXT",
+            "ALTER TABLE trade_journal ADD COLUMN expert_instance TEXT",
+            "ALTER TABLE trade_journal ADD COLUMN signal_id TEXT",
+            "ALTER TABLE trade_journal ADD COLUMN plan_source TEXT",
+            "ALTER TABLE trade_journal ADD COLUMN model_versions TEXT",
+            "ALTER TABLE trade_journal ADD COLUMN bundle_hash TEXT",
+            "ALTER TABLE trade_journal ADD COLUMN router_variant TEXT",
+            "ALTER TABLE trade_journal ADD COLUMN governor_flags TEXT",
+            "ALTER TABLE trade_journal ADD COLUMN agent_verdict TEXT",
+            "ALTER TABLE trade_journal ADD COLUMN order_ts_ms INTEGER",
+            "ALTER TABLE trade_journal ADD COLUMN fill_ts_ms INTEGER",
+            "ALTER TABLE trade_journal ADD COLUMN exit_decided_ts_ms INTEGER",
+            "ALTER TABLE model_versions ADD COLUMN bundle_id TEXT",
+            """CREATE TABLE IF NOT EXISTS bundles (
+                bundle_id TEXT PRIMARY KEY,
+                bundle_hash TEXT NOT NULL,
+                regime_set_hash TEXT NOT NULL,
+                manifest_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                trained_at TEXT NOT NULL,
+                promoted_at TEXT,
+                promoted_by TEXT
+            )""",
+            """CREATE TABLE IF NOT EXISTS model_predictions (
+                id TEXT PRIMARY KEY,
+                bar_ts INTEGER NOT NULL,
+                model_id TEXT NOT NULL,
+                model_version TEXT NOT NULL,
+                bundle_hash TEXT,
+                kind TEXT NOT NULL DEFAULT 'active',
+                features_hash TEXT,
+                output_json TEXT NOT NULL,
+                used_in_decision INTEGER NOT NULL DEFAULT 1,
+                signal_id TEXT,
+                regime_id TEXT,
+                instance TEXT
+            )""",
+            """CREATE TABLE IF NOT EXISTS model_outcomes (
+                prediction_id TEXT PRIMARY KEY,
+                outcome_ts INTEGER NOT NULL,
+                realized_json TEXT NOT NULL
+            )""",
+        ],
+    ),
+]
+
+LATEST_SCHEMA_VERSION = MIGRATIONS[-1][0] if MIGRATIONS else 0
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return {str(r[1]) for r in rows}
+
+
+def apply_migrations(conn: sqlite3.Connection, db_path: str = MEMORY_PATH) -> int:
+    """Apply base SCHEMA and any pending versioned migrations inside a transaction."""
+    conn.executescript(SCHEMA)
+    cur_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    if cur_version >= LATEST_SCHEMA_VERSION:
+        return cur_version
+
+    # Take a backup before migrating an existing file-backed DB that has tables/rows
+    if db_path != MEMORY_PATH and os.path.exists(db_path) and os.path.getsize(db_path) > 0:
+        bak_path = f"{db_path}.bak.{cur_version}"
+        if not os.path.exists(bak_path):
+            try:
+                shutil.copy2(db_path, bak_path)
+            except OSError as exc:
+                logger.warning("Could not write DB backup %s: %s", bak_path, exc)
+
+    try:
+        with conn:
+            for target_ver, statements in MIGRATIONS:
+                if target_ver <= cur_version:
+                    continue
+                for stmt in statements:
+                    if stmt.strip().upper().startswith("ALTER TABLE"):
+                        parts = stmt.split()
+                        tbl = parts[2]
+                        col = parts[5]
+                        if col in _table_columns(conn, tbl):
+                            continue
+                    conn.execute(stmt)
+                conn.execute(f"PRAGMA user_version = {target_ver}")
+                cur_version = target_ver
+    except Exception:
+        conn.rollback()
+        raise
+    return cur_version
+
 
 class _Pool(threading.local):
-    """Per-thread connection pool, keyed by resolved database path.
-
-    A connection is bound to the thread that opened it (``sqlite3``'s own
-    default), so the pool is thread-local rather than guarded by a lock.
-    Each entry remembers the file identity (device, inode) it was opened
-    against: a database file that was deleted and re-created -- a test's
-    temp directory, a manual reset -- is detected and re-opened instead
-    of serving a handle to a dead file.
-    """
+    """Per-thread connection pool, keyed by resolved database path."""
 
     def __init__(self) -> None:
         self.entries: dict = {}
@@ -126,21 +220,14 @@ def _file_identity(path: str):
 
 
 def open_connection(db_path: str = DEFAULT_DB_PATH, wal: bool = False) -> sqlite3.Connection:
-    """Open a NEW, un-pooled connection with the schema applied.
-
-    The schema DDL runs once per connection, here -- not on every
-    ``connect()`` call, which used to be the replay's dominant cost.
-    ``wal=True`` switches the database to WAL + ``synchronous=NORMAL``:
-    a read-modify-write per bar then costs a page append instead of a
-    journal create / fsync / delete.
-    """
+    """Open a NEW, un-pooled connection with the schema and migrations applied."""
     if db_path != MEMORY_PATH:
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     if wal and db_path != MEMORY_PATH:
         _enable_wal(conn, db_path)
-    conn.executescript(SCHEMA)
+    apply_migrations(conn, db_path=db_path)
     return conn
 
 
@@ -161,12 +248,7 @@ def _is_alive(conn: sqlite3.Connection) -> bool:
 
 
 def get_connection(db_path: str = DEFAULT_DB_PATH, wal: bool = False) -> sqlite3.Connection:
-    """The pooled connection for ``db_path`` (one per thread per file).
-
-    Callers must NOT close it -- use :func:`close_connection` /
-    :func:`close_all_connections`. A closed or replaced file is
-    re-opened transparently.
-    """
+    """The pooled connection for ``db_path`` (one per thread per file)."""
     if db_path == MEMORY_PATH:
         return open_connection(db_path)
 
@@ -177,7 +259,6 @@ def get_connection(db_path: str = DEFAULT_DB_PATH, wal: bool = False) -> sqlite3
         conn, opened_identity, has_wal = entry
         if identity == opened_identity and identity is not None and _is_alive(conn):
             if wal and not has_wal:
-                # Another store opened the file first; upgrade it once.
                 _enable_wal(conn, key)
                 _POOL.entries[key] = (conn, opened_identity, True)
             return conn
@@ -215,12 +296,7 @@ def close_all_connections() -> None:
 
 @contextmanager
 def connect(db_path: str = DEFAULT_DB_PATH, wal: bool = False):
-    """Context-managed pooled connection.
-
-    Commits on a clean exit and rolls back on an exception. The
-    connection stays open for the next caller; a ``:memory:`` path gets a
-    private connection that is closed on exit.
-    """
+    """Context-managed pooled connection."""
     conn = get_connection(db_path, wal=wal)
     try:
         yield conn

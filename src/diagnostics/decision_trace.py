@@ -37,6 +37,11 @@ TERMINAL_STAGES: Tuple[str, ...] = (
     "opportunity_filter",
     "router_no_trade",
     "position_open",
+    "concurrency_limit",
+    "exposure_limit",
+    "expert_cooldown",
+    "portfolio_halt",
+    "governor_veto",
     "risk_layer",
     "circuit_breaker",
     "execution_failed",
@@ -51,6 +56,11 @@ STAGE_LABELS: Dict[str, str] = {
     "opportunity_filter": "Failed opportunity filter",
     "router_no_trade": "Rejected by router",
     "position_open": "Position already open",
+    "concurrency_limit": "Concurrency limit reached",
+    "exposure_limit": "Exposure limit reached",
+    "expert_cooldown": "Expert in cool-down",
+    "portfolio_halt": "Portfolio time-boxed halt",
+    "governor_veto": "Risk governor veto",
     "risk_layer": "Rejected by risk layer",
     "circuit_breaker": "Circuit breaker active",
     "execution_failed": "Execution failed",
@@ -64,12 +74,17 @@ STAGE_LABELS: Dict[str, str] = {
 STAGE_STYLES: Dict[str, str] = {
     "executed": "green",
     "circuit_breaker": "red",
+    "portfolio_halt": "red",
     "execution_failed": "red",
     "risk_layer": "yellow",
+    "governor_veto": "yellow",
+    "exposure_limit": "yellow",
+    "expert_cooldown": "cyan",
     "opportunity_filter": "yellow",
     "router_no_trade": "cyan",
     "no_expert_candidate": "white",
     "position_open": "magenta",
+    "concurrency_limit": "magenta",
 }
 
 #: Risk-layer rejection reasons that are CONSEQUENCES of an earlier stage
@@ -139,6 +154,16 @@ def classify_terminal_stage(
         reason = risk_decision.rejection_reason or ""
         if reason.startswith("circuit_breaker_active") or reason == "manual_kill_switch_active":
             return "circuit_breaker", reason
+        if reason.startswith("portfolio_halt:"):
+            return "portfolio_halt", reason
+        if reason.startswith("expert_cooldown:"):
+            return "expert_cooldown", reason
+        if reason.startswith("concurrency_limit:"):
+            return "concurrency_limit", reason
+        if reason.startswith("exposure_limit:"):
+            return "exposure_limit", reason
+        if reason.startswith("governor_veto:"):
+            return "governor_veto", reason
         if reason == "selected_expert_has_no_candidate":
             return "no_expert_candidate", "no expert candidate"
         if reason not in _DERIVED_RISK_REJECTIONS:

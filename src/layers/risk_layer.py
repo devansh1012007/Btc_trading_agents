@@ -18,7 +18,7 @@ import logging
 import os
 import pickle
 from contextlib import contextmanager
-from datetime import date, datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -37,6 +37,7 @@ from ..state.contracts import (
     RouterDecision,
     ZoneMap,
 )
+from ..utils.clock import Clock, WallClock
 from ..utils.config_helpers import parse_regime_list
 
 logger = logging.getLogger(__name__)
@@ -64,17 +65,25 @@ def build_features(
     }
 
 
-def compute_base_size(equity: float, expert_output, cfg: dict) -> float:
+def compute_base_size(equity: float, expert_output, cfg: dict, exit_plan=None) -> float:
     """
-    Standard risk-based sizing (§5.1): decide how much you're willing to
-    lose (risk_pct_per_trade of equity), then size backward from the
-    expert's own invalidation distance so a stop-out loses exactly that
-    much, not an arbitrary position size that happens to hit the stop.
-    Returns a $ notional; 0.0 if the stop distance is non-positive
-    (nothing sane to size against).
+    Standard risk-based sizing (§5.1 + Phase 4 Stop-Source Unification):
+    Supports `cfg.get("stop_source", "invalidation_distance")`:
+    * `"invalidation_distance"` (default): uses `expert_output.invalidation_distance`.
+    * `"exit_plan"`: uses `exit_plan.effective_stop_loss_pct` (falling back to
+      `expert_output.exit_plan.effective_stop_loss_pct`, then `invalidation_distance`).
     """
     risk_amount = equity * (cfg.get("risk_pct_per_trade", 0.5) / 100)
-    stop_distance_pct = expert_output.invalidation_distance
+    stop_source = str(cfg.get("stop_source", "invalidation_distance"))
+    stop_distance_pct: float
+    if stop_source == "exit_plan":
+        plan = exit_plan if exit_plan is not None else getattr(expert_output, "exit_plan", None)
+        if plan is not None:
+            stop_distance_pct = float(plan.effective_stop_loss_pct)
+        else:
+            stop_distance_pct = float(expert_output.invalidation_distance)
+    else:
+        stop_distance_pct = float(expert_output.invalidation_distance)
     if stop_distance_pct <= 0:
         return 0.0
     return risk_amount / (stop_distance_pct / 100)
@@ -102,15 +111,21 @@ class RiskStateStore:
     restarts by design (§5.3, §14 test_circuit_breaker_persists_across_restart).
     """
 
-    def __init__(self, db_path: str = DEFAULT_DB_PATH, persistent: bool = True):
+    def __init__(
+        self,
+        db_path: str = DEFAULT_DB_PATH,
+        persistent: bool = True,
+        clock: Optional[Clock] = None,
+    ):
         """``persistent=False`` keeps the state in a private in-memory
-        database that dies with the store: for a viewer (the Trade Map
-        GUI replay) that needs the breaker's semantics but must neither
-        pay for durability nor touch a file. The counters, the daily-loss
-        accumulator and the trip flags behave identically either way.
-        """
+        database that dies with the store. ``clock`` defaults to ``WallClock``
+        and can be ``BarClock`` in simulated backtests/replays."""
         self.db_path = db_path if persistent else MEMORY_PATH
         self._private = open_connection(MEMORY_PATH) if not persistent else None
+        self.clock: Clock = clock or WallClock()
+
+    def advance_clock(self, timestamp: float) -> None:
+        self.clock.advance(timestamp)
 
     @contextmanager
     def _connect(self):
@@ -136,7 +151,7 @@ class RiskStateStore:
             conn.execute(
                 "INSERT INTO risk_state (key, value, updated_at) VALUES (?, ?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
-                (key, json.dumps(value), datetime.now(timezone.utc).isoformat()),
+                (key, json.dumps(value), self.clock.now_iso()),
             )
 
     # ---- execution errors ----
@@ -154,7 +169,7 @@ class RiskStateStore:
         losses = losses + 1 if pnl_pct <= 0 else 0
         self._set("consecutive_losses", losses)
 
-        today = date.today().isoformat()
+        today = self.clock.today_iso()
         stored_date = self._get("daily_loss_date")
         cumulative = self._get("daily_loss_pct", 0.0) if stored_date == today else 0.0
         if pnl_pct < 0:
@@ -168,7 +183,7 @@ class RiskStateStore:
         return self._get("consecutive_losses", 0)
 
     def daily_loss_pct(self) -> float:
-        today = date.today().isoformat()
+        today = self.clock.today_iso()
         stored_date = self._get("daily_loss_date")
         return self._get("daily_loss_pct", 0.0) if stored_date == today else 0.0
 
@@ -192,10 +207,10 @@ class RiskStateStore:
         if last is None:
             return False  # no data yet at all isn't "stale", it's "not started"
         last_dt = datetime.fromisoformat(last)
-        return (datetime.now(timezone.utc) - last_dt).total_seconds() > threshold_seconds
+        return (self.clock.now_utc() - last_dt).total_seconds() > threshold_seconds
 
     def heartbeat(self) -> None:
-        self._set("last_bar_processed_at", datetime.now(timezone.utc).isoformat())
+        self._set("last_bar_processed_at", self.clock.now_iso())
 
     # ---- breaker trip/reset (independent of the counters above) ----
     def trip(self, breaker_type: str, reason: str) -> None:
@@ -205,14 +220,14 @@ class RiskStateStore:
                 "VALUES (?, ?, ?, 1, NULL) "
                 "ON CONFLICT(breaker_type) DO UPDATE SET tripped_at=excluded.tripped_at, "
                 "reason=excluded.reason, active=1, reset_at=NULL",
-                (breaker_type, datetime.now(timezone.utc).isoformat(), reason),
+                (breaker_type, self.clock.now_iso(), reason),
             )
 
     def reset(self, breaker_type: str) -> None:
         with self._connect() as conn:
             conn.execute(
                 "UPDATE circuit_breaker_halts SET active=0, reset_at=? WHERE breaker_type=?",
-                (datetime.now(timezone.utc).isoformat(), breaker_type),
+                (self.clock.now_iso(), breaker_type),
             )
         if breaker_type == "consecutive_execution_errors":
             self._set("consecutive_execution_errors", 0)
@@ -414,7 +429,7 @@ class RiskLayer:
             return reject(f"regime_blocked({regime_state.primary_regime.value})")
 
         # --- Approved: compute sizing ---
-        base_size = compute_base_size(equity, expert_output, self.sizing_cfg)
+        base_size = compute_base_size(equity, expert_output, self.sizing_cfg, exit_plan=getattr(expert_output, 'exit_plan', None))
         max_position = equity * (self.sizing_cfg.get("max_position_pct_of_equity", 100.0) / 100)
         base_size = min(base_size, max_position)
 
@@ -442,6 +457,16 @@ class RiskLayer:
         if ml_risk_component is not None:
             w = self.blend_weight
             risk_score = (1 - w) * rule_based_risk + w * ml_risk_component
+            apply_to_size = bool(
+                (self.config.get("ml_model") or {}).get("apply_to_size", False)
+                or (self.sizing_cfg.get("ml_risk_sizing") or {}).get("enabled", False)
+            )
+            if apply_to_size:
+                from ..sizing.risk_model import risk_score_to_size_multiplier
+                min_mult = float((self.sizing_cfg.get("ml_risk_sizing") or {}).get("min_multiplier", 0.20))
+                ml_mult = risk_score_to_size_multiplier(ml_risk_component, min_multiplier=min_mult)
+                adjusted_size = adjusted_size * ml_mult
+                size_reduction_pct = (1 - (adjusted_size / base_size)) * 100 if base_size > 0 else 0.0
         else:
             risk_score = rule_based_risk
 

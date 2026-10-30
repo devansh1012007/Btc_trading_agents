@@ -1,18 +1,31 @@
 """
-Regime Detection Layer (Phase 2, §7). 3-state Gaussian HMM (forward-filtered
-only), fast panic-spike override, LightGBM distillation classifier,
-fallback chain LightGBM -> HMM filter -> rule-based. Phase 3 adds a
-data_granularity guard (§4.7) on both model loads.
+Regime Detection Layer (Phase 2, §7 + Phase 5 Dynamic Regimes & Serving Chain).
+
+Supports a configurable serving chain:
+`dynamic_lgbm -> dynamic_backend -> legacy_4class_lgbm -> legacy_hmm -> rule_based`,
+plus optional hysteresis (`min_dwell_bars`, `switch_margin`) and sets
+`serving_source_used` and `regime_set_id` on every returned `RegimeState`.
 """
 import logging
 import pickle
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 import numpy as np
 
-from ..state.contracts import FEATURE_SCHEMA_VERSION, FeatureVector, RegimeState, RegimeType
+from ..regime.backends import RegimeBackend
+from ..regime.distill import DistilledRegimeClassifier
+from ..state.contracts import (
+    FEATURE_SCHEMA_VERSION,
+    LEGACY_REGIME_SET,
+    FeatureVector,
+    RegimeLike,
+    RegimeSet,
+    RegimeState,
+    RegimeType,
+    coerce_regime,
+)
 from ..utils.rolling_buffer import RollingBarBuffer
 
 logger = logging.getLogger(__name__)
@@ -22,15 +35,20 @@ HMM_OBSERVATION_FEATURES = [
     "momentum_medium", "momentum_long", "volatility_medium", "volatility_long", "volume_zscore",
 ]
 
-# Full classifier feature set (includes all FeatureVector fields used by the
-# regime classifier). Centralized here so train_regime_models.py imports it
-# instead of hardcoding a second copy of these names.
 CLASSIFIER_FEATURE_NAMES = [
     "momentum_short", "momentum_medium", "momentum_long", "volatility_short",
     "volatility_medium", "volatility_long", "returns_5", "rsi_14", "macd_signal",
     "sma_9", "sma_21", "imbalance_ratio", "orderflow_momentum", "spread_pct",
     "depth_10_level",
 ]
+
+DEFAULT_SERVING_CHAIN = (
+    "dynamic_lgbm",
+    "dynamic_backend",
+    "legacy_4class_lgbm",
+    "legacy_hmm",
+    "rule_based",
+)
 
 
 def panic_score(volatility_z: float, momentum_z: float, volume_z: float, z_threshold: float = 3.0) -> float:
@@ -48,8 +66,7 @@ class HMMStateMapping:
 
 
 class _ManualGaussianHMMFilter:
-    """Self-contained forward-only Gaussian HMM filter (numpy only, no
-    hmmlearn dependency at serving time)."""
+    """Self-contained forward-only Gaussian HMM filter (numpy only)."""
 
     def __init__(self, startprob: np.ndarray, transmat: np.ndarray, means: np.ndarray, covars: np.ndarray):
         self.startprob = np.asarray(startprob, dtype=float)
@@ -84,7 +101,7 @@ class _ManualGaussianHMMFilter:
 
 
 class RegimeDetector:
-    """Per-bar regime detection with a LightGBM -> HMM -> rule-based fallback chain."""
+    """Per-bar regime detection with configurable serving chain and hysteresis."""
 
     def __init__(
         self,
@@ -97,6 +114,13 @@ class RegimeDetector:
         observation_lookback_bars: int = 100,
         serving_source: str = "auto",
         data_granularity: str = "1m",
+        *,
+        dynamic_classifier: Optional[DistilledRegimeClassifier] = None,
+        dynamic_backend: Optional[RegimeBackend] = None,
+        regime_set: Optional[RegimeSet] = None,
+        serving_chain: Optional[Sequence[str]] = None,
+        min_dwell_bars: int = 0,
+        switch_margin: float = 0.0,
     ):
         self.confidence_floor = confidence_floor
         self.persistence_window_bars = persistence_window_bars
@@ -104,6 +128,18 @@ class RegimeDetector:
         self.panic_z_threshold = panic_z_threshold
         self.serving_source = serving_source
         self.data_granularity = data_granularity
+
+        self.dynamic_classifier = dynamic_classifier
+        self.dynamic_backend = dynamic_backend
+        self.regime_set: RegimeSet = (
+            regime_set
+            or (dynamic_classifier.regime_set if dynamic_classifier is not None else None)
+            or LEGACY_REGIME_SET
+        )
+        self.regime_set_id = self.regime_set.id
+        self.serving_chain = tuple(serving_chain) if serving_chain is not None else DEFAULT_SERVING_CHAIN
+        self.min_dwell_bars = int(min_dwell_bars)
+        self.switch_margin = float(switch_margin)
 
         self._obs_buffer = RollingBarBuffer(maxlen=observation_lookback_bars)
 
@@ -115,7 +151,8 @@ class RegimeDetector:
         self._load_models(hmm_model_path, classifier_model_path)
 
         self._hmm_alpha: Optional[np.ndarray] = None
-        self._current_primary: RegimeType = RegimeType.UNKNOWN
+        self._dynamic_prior: Optional[np.ndarray] = None
+        self._current_primary: RegimeLike = RegimeType.UNKNOWN
         self._regime_age = 0
         self._recent_raw_history: List[str] = []
 
@@ -189,42 +226,83 @@ class RegimeDetector:
         return np.array([bar[name] for name in HMM_OBSERVATION_FEATURES], dtype=float)
 
     def _hmm_probs_in_label_order(self, hidden_state_probs: np.ndarray) -> np.ndarray:
+        assert self._hmm_mapping is not None
         order = self._hmm_mapping.label_order_indices()
         return np.array([hidden_state_probs[i] for i in order])
 
-    def compute_regime(self, feature_vector: FeatureVector, symbol: str = "BTC/USDT") -> RegimeState:
-        if self.serving_source == "lgbm_classifier" and self._classifier is not None:
-            probs = self._classify_with_lgbm(feature_vector)
-        elif self.serving_source == "hmm_filter" and self._hmm_filter is not None:
-            probs = self._classify_with_hmm(feature_vector)
-        elif self.serving_source == "rule_based":
-            probs = self._classify_with_rule(feature_vector)
-        elif self._classifier is not None:
-            probs = self._classify_with_lgbm(feature_vector)
-        elif self._hmm_filter is not None:
-            probs = self._classify_with_hmm(feature_vector)
-        else:
-            probs = self._classify_with_rule(feature_vector)
+    def _try_source(self, source: str, fv: FeatureVector) -> Optional[tuple]:
+        """Try one source in the serving chain; return `(probs_dict, source_name, regime_set_id)` or `None`."""
+        if source == "dynamic_lgbm" and self.dynamic_classifier is not None:
+            try:
+                row = np.array([[getattr(fv, name, 0.0) or 0.0 for name in self.dynamic_classifier.feature_names]])
+                probs = self.dynamic_classifier.predict_probs_dict(row)
+                return probs, "dynamic_lgbm", self.dynamic_classifier.regime_set.id
+            except Exception as e:
+                logger.warning(f"dynamic_lgbm failed, falling back: {e}")
+                return None
 
-        return self._assemble_regime_state(probs, feature_vector.timestamp, symbol)
+        if source == "dynamic_backend" and self.dynamic_backend is not None:
+            obs = self._hmm_observation_vector()
+            if obs is None:
+                return None
+            try:
+                probs_vec, self._dynamic_prior = self.dynamic_backend.filter_step(obs, self._dynamic_prior)
+                ids = self.regime_set.ids()
+                if len(ids) != len(probs_vec):
+                    ids = tuple(f"r_{i}" for i in range(len(probs_vec)))
+                probs = {rid: float(p) for rid, p in zip(ids, probs_vec, strict=False)}
+                return probs, "dynamic_backend", self.regime_set.id
+            except Exception as e:
+                logger.warning(f"dynamic_backend failed, falling back: {e}")
+                return None
+
+        if source in ("legacy_4class_lgbm", "lgbm_classifier") and self._classifier is not None:
+            try:
+                assert self._classifier_feature_names is not None
+                row = np.array([[getattr(fv, name, 0.0) or 0.0 for name in self._classifier_feature_names]])
+                proba = self._classifier.predict_proba(row)[0]
+                classes = list(self._classifier.classes_)
+                labels = ["trending_up", "trending_down", "chop_range", "panic_spike"]
+                probs = {str(cls): float(p) for cls, p in zip(classes, proba, strict=False)}
+                for label in labels:
+                    probs.setdefault(label, 0.0)
+                total = sum(probs[lbl] for lbl in labels) or 1.0
+                return {k: probs[k] / total for k in labels}, "legacy_4class_lgbm", "legacy4"
+            except Exception as e:
+                logger.warning(f"LightGBM regime classifier inference failed, falling back: {e}")
+                return None
+
+        if source in ("legacy_hmm", "hmm_filter") and self._hmm_filter is not None:
+            return self._classify_with_hmm(fv), "legacy_hmm", "legacy4"
+
+        if source == "rule_based":
+            return self._classify_with_rule(fv), "rule_based", "legacy4"
+
+        return None
+
+    def compute_regime(self, feature_vector: FeatureVector, symbol: str = "BTC/USDT") -> RegimeState:
+        if self.serving_source != "auto":
+            res = self._try_source(self.serving_source, feature_vector)
+            if res is not None:
+                probs, src_used, rset_id = res
+                return self._assemble_regime_state(probs, feature_vector.timestamp, symbol, src_used, rset_id)
+
+        for src in self.serving_chain:
+            res = self._try_source(src, feature_vector)
+            if res is not None:
+                probs, src_used, rset_id = res
+                return self._assemble_regime_state(probs, feature_vector.timestamp, symbol, src_used, rset_id)
+
+        probs = self._classify_with_rule(feature_vector)
+        return self._assemble_regime_state(probs, feature_vector.timestamp, symbol, "rule_based", "legacy4")
 
     def _classify_with_lgbm(self, feature_vector: FeatureVector) -> Dict[str, float]:
-        try:
-            row = np.array([[getattr(feature_vector, name, 0.0) or 0.0 for name in self._classifier_feature_names]])
-            proba = self._classifier.predict_proba(row)[0]
-            classes = list(self._classifier.classes_)
-        except Exception as e:
-            logger.warning(f"LightGBM regime classifier inference failed, falling back: {e}")
-            if self._hmm_filter is not None:
-                return self._classify_with_hmm(feature_vector)
-            return self._classify_with_rule(feature_vector)
-
-        labels = ["trending_up", "trending_down", "chop_range", "panic_spike"]
-        probs = {cls: float(p) for cls, p in zip(classes, proba, strict=False)}
-        for label in labels:
-            probs.setdefault(label, 0.0)
-        total = sum(probs[lbl] for lbl in labels) or 1.0
-        return {k: probs[k] / total for k in labels}
+        res = self._try_source("legacy_4class_lgbm", feature_vector)
+        if res is not None:
+            return res[0]
+        if self._hmm_filter is not None:
+            return self._classify_with_hmm(feature_vector)
+        return self._classify_with_rule(feature_vector)
 
     def _classify_with_hmm(self, feature_vector: FeatureVector) -> Dict[str, float]:
         obs = self._hmm_observation_vector()
@@ -288,15 +366,22 @@ class RegimeDetector:
             return 0.0
         return float(latest.get("volume_zscore", 0.0) or 0.0)
 
-    def _assemble_regime_state(self, probs: Dict[str, float], timestamp: int, symbol: str) -> RegimeState:
-        primary_label = max(probs, key=probs.get)
-        confidence = probs[primary_label]
+    def _assemble_regime_state(
+        self,
+        probs: Mapping[str, float],
+        timestamp: int,
+        symbol: str,
+        serving_source_used: str = "rule_based",
+        regime_set_id: Optional[str] = None,
+    ) -> RegimeState:
+        primary_label = max(probs, key=lambda k: probs[k])
+        confidence = float(probs[primary_label])
         insufficient_history = len(self._obs_buffer) < 5
 
         if confidence < self.confidence_floor or insufficient_history:
-            raw_regime = RegimeType.UNKNOWN
+            raw_regime: RegimeLike = RegimeType.UNKNOWN
         else:
-            raw_regime = RegimeType(primary_label)
+            raw_regime = coerce_regime(primary_label)
 
         self._recent_raw_history.append(raw_regime.value)
         if len(self._recent_raw_history) > self.persistence_window_bars:
@@ -306,7 +391,10 @@ class RegimeDetector:
             candidate_persistence = (
                 self._recent_raw_history.count(raw_regime.value) / len(self._recent_raw_history)
             )
-            if candidate_persistence >= self.persistence_transition_threshold:
+            curr_prob = float(probs.get(self._current_primary.value, 0.0))
+            dwell_ok = self.min_dwell_bars <= 0 or self._regime_age >= self.min_dwell_bars
+            margin_ok = self.switch_margin <= 0.0 or (confidence - curr_prob) >= self.switch_margin
+            if candidate_persistence >= self.persistence_transition_threshold and dwell_ok and margin_ok:
                 self._current_primary = raw_regime
                 self._regime_age = 0
             else:
@@ -319,15 +407,15 @@ class RegimeDetector:
         )
 
         return RegimeState(
-            timestamp=timestamp, symbol=symbol,
-            prob_trending_up=probs.get("trending_up", 0.0),
-            prob_trending_down=probs.get("trending_down", 0.0),
-            prob_chop_range=probs.get("chop_range", 0.0),
-            prob_panic_spike=probs.get("panic_spike", 0.0),
+            timestamp=timestamp,
+            symbol=symbol,
             primary_regime=self._current_primary,
             regime_confidence=confidence,
             hmm_hidden_state=int(np.argmax(self._hmm_alpha)) if self._hmm_alpha is not None else None,
             hmm_probabilities=[float(x) for x in self._hmm_alpha] if self._hmm_alpha is not None else [],
             regime_age=self._regime_age,
             regime_persistence_score=persistence_score,
+            regime_set_id=regime_set_id or self.regime_set_id,
+            regime_probs={str(k): float(v) for k, v in probs.items()},
+            serving_source_used=serving_source_used,
         )

@@ -5,7 +5,7 @@ This is the single source of truth for system state.
 """
 from dataclasses import asdict, dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 # ============================================================================
 # REGIME & STRUCTURE ENUMS
@@ -17,6 +17,118 @@ class RegimeType(Enum):
     CHOP_RANGE = "chop_range"
     PANIC_SPIKE = "panic_spike"
     UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class DynamicRegime:
+    """Duck-compatible dynamic regime identifier (.name, .value, hashable, orderable)."""
+    id: str
+    display_name: Optional[str] = None
+    semantic_tag: Optional[str] = None
+
+    @property
+    def value(self) -> str:
+        return self.id
+
+    @property
+    def name(self) -> str:
+        return (self.display_name or self.id).upper()
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, DynamicRegime):
+            return self.id == other.id
+        if isinstance(other, RegimeType):
+            return self.id == other.value or self.id.upper() == other.name
+        if isinstance(other, str):
+            return self.id == other or self.id.upper() == other.upper()
+        return False
+
+    def __hash__(self) -> int:
+        for member in RegimeType:
+            if self.id == member.value or self.id.upper() == member.name:
+                return hash(member)
+        return hash(self.id)
+
+    def __lt__(self, other: object) -> bool:
+        other_val = getattr(other, "value", str(other))
+        return self.id < str(other_val)
+
+
+RegimeLike = RegimeType | DynamicRegime
+
+
+def coerce_regime(value: "RegimeLike | str") -> RegimeLike:
+    """Coerce a string or RegimeLike into RegimeType (if one of the 5 legacy names/values) or DynamicRegime."""
+    if isinstance(value, (RegimeType, DynamicRegime)):
+        return value
+    s = str(value).strip()
+    for member in RegimeType:
+        if s == member.value or s.upper() == member.name:
+            return member
+    return DynamicRegime(id=s.lower(), display_name=s.upper())
+
+
+@dataclass(frozen=True)
+class RegimeSet:
+    """Ordered set of regime identifiers and display metadata."""
+    set_id: str
+    regime_ids: tuple[str, ...]
+    display_names: Dict[str, str] = field(default_factory=dict)
+    semantic_tags: Dict[str, str] = field(default_factory=dict)
+
+    @property
+    def id(self) -> str:
+        return self.set_id
+
+    def ids(self) -> tuple[str, ...]:
+        return self.regime_ids
+
+    @property
+    def regimes(self) -> tuple[RegimeLike, ...]:
+        return tuple(coerce_regime(rid) for rid in self.regime_ids)
+
+    @property
+    def k(self) -> int:
+        return len(self.regime_ids)
+
+    @property
+    def version_hash(self) -> str:
+        import hashlib, json
+        blob = json.dumps(
+            {"set_id": self.set_id, "regime_ids": list(self.regime_ids)},
+            sort_keys=True, separators=(",", ":"),
+        )
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+    def prob_feature_names(self, prefix: str = "prob_") -> List[str]:
+        return [f"{prefix}{rid}" for rid in self.regime_ids]
+
+
+LEGACY_REGIME_SET = RegimeSet(
+    set_id="legacy4",
+    regime_ids=("trending_up", "trending_down", "chop_range", "panic_spike"),
+    display_names={
+        "trending_up": "TRENDING_UP",
+        "trending_down": "TRENDING_DOWN",
+        "chop_range": "CHOP_RANGE",
+        "panic_spike": "PANIC_SPIKE",
+    },
+    semantic_tags={
+        "trending_up": "trend_up",
+        "trending_down": "trend_down",
+        "chop_range": "range",
+        "panic_spike": "panic",
+    },
+)
+
+
+def regime_prob_features(
+    regime_set: Optional[RegimeSet] = None,
+    prefix: str = "prob_",
+) -> List[str]:
+    """Ordered probability feature names for ``regime_set`` (defaults to LEGACY_REGIME_SET)."""
+    rs = regime_set or LEGACY_REGIME_SET
+    return rs.prob_feature_names(prefix=prefix)
 
 
 class ExpertAction(Enum):
@@ -219,14 +331,14 @@ class RegimeState:
     symbol: str
 
     # Regime probabilities (sum to ~1.0)
-    prob_trending_up: float
-    prob_trending_down: float
-    prob_chop_range: float
-    prob_panic_spike: float
+    prob_trending_up: float = 0.0
+    prob_trending_down: float = 0.0
+    prob_chop_range: float = 0.0
+    prob_panic_spike: float = 0.0
 
     # Best guess (but use probabilities upstream)
-    primary_regime: RegimeType
-    regime_confidence: float  # 0-1
+    primary_regime: RegimeLike = RegimeType.UNKNOWN
+    regime_confidence: float = 0.0  # 0-1
 
     # Hidden state tracking (from HMM)
     hmm_hidden_state: Optional[int] = None
@@ -235,6 +347,46 @@ class RegimeState:
     # Persistence metrics
     regime_age: int = 0  # bars since last regime change
     regime_persistence_score: float = 0.0  # how sticky is current regime
+
+    # Dynamic K regime set support (Phase 2, T2.1)
+    regime_set_id: str = "legacy4"
+    regime_probs: Dict[str, float] = field(default_factory=dict)
+    serving_source_used: str = "rules"
+
+    def __post_init__(self) -> None:
+        if not self.regime_probs:
+            object.__setattr__(
+                self,
+                "regime_probs",
+                {
+                    "trending_up": float(self.prob_trending_up),
+                    "trending_down": float(self.prob_trending_down),
+                    "chop_range": float(self.prob_chop_range),
+                    "panic_spike": float(self.prob_panic_spike),
+                },
+            )
+        else:
+            # Populate legacy fields if present in regime_probs and legacy fields were left at 0.0
+            probs = dict(self.regime_probs)
+            object.__setattr__(self, "regime_probs", probs)
+            if (
+                self.prob_trending_up == 0.0
+                and self.prob_trending_down == 0.0
+                and self.prob_chop_range == 0.0
+                and self.prob_panic_spike == 0.0
+            ):
+                for rid, attr in (
+                    ("trending_up", "prob_trending_up"),
+                    ("trending_down", "prob_trending_down"),
+                    ("chop_range", "prob_chop_range"),
+                    ("panic_spike", "prob_panic_spike"),
+                ):
+                    if rid in probs:
+                        object.__setattr__(self, attr, float(probs[rid]))
+
+    def get_prob(self, regime_id: str, default: float = 0.0) -> float:
+        """Accessor for regime probability by id."""
+        return float(self.regime_probs.get(regime_id, default))
 
     def to_dict(self) -> Dict:
         d = asdict(self)
@@ -245,6 +397,75 @@ class RegimeState:
 # ============================================================================
 # LAYER 5: EXPERT OUTPUTS
 # ============================================================================
+
+@dataclass(frozen=True)
+class TrailSpec:
+    """Trailing stop specification attached to an ExitPlan."""
+    enabled: bool = False
+    activation_pct: float = 0.0
+    distance_pct: float = 0.0
+    step_pct: float = 0.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "enabled": bool(self.enabled),
+            "activation_pct": float(self.activation_pct),
+            "distance_pct": float(self.distance_pct),
+            "step_pct": float(self.step_pct),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Optional[Mapping[str, Any]]) -> "TrailSpec":
+        if not data:
+            return cls()
+        return cls(
+            enabled=bool(data.get("enabled", False)),
+            activation_pct=float(data.get("activation_pct", 0.0)),
+            distance_pct=float(data.get("distance_pct", 0.0)),
+            step_pct=float(data.get("step_pct", 0.0)),
+        )
+
+
+@dataclass(frozen=True)
+class ExitPlan:
+    """Unified exit plan carried by ExpertOutput and OpenPosition."""
+    stop_loss_pct: float
+    take_profit_pct: float
+    max_holding_bars: int
+    trailing: Optional[TrailSpec] = None
+    hard_max_loss_pct: Optional[float] = None
+    source: str = "regime_specific"
+
+    @property
+    def effective_stop_loss_pct(self) -> float:
+        if self.hard_max_loss_pct is not None and self.hard_max_loss_pct > 0:
+            return min(float(self.stop_loss_pct), float(self.hard_max_loss_pct))
+        return float(self.stop_loss_pct)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "stop_loss_pct": float(self.stop_loss_pct),
+            "take_profit_pct": float(self.take_profit_pct),
+            "max_holding_bars": int(self.max_holding_bars),
+            "trailing": self.trailing.to_dict() if self.trailing is not None else None,
+            "hard_max_loss_pct": float(self.hard_max_loss_pct) if self.hard_max_loss_pct is not None else None,
+            "source": str(self.source),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Optional[Mapping[str, Any]]) -> Optional["ExitPlan"]:
+        if not data:
+            return None
+        tr_raw = data.get("trailing")
+        return cls(
+            stop_loss_pct=float(data["stop_loss_pct"]),
+            take_profit_pct=float(data["take_profit_pct"]),
+            max_holding_bars=int(data.get("max_holding_bars", 5)),
+            trailing=TrailSpec.from_dict(tr_raw) if tr_raw else None,
+            hard_max_loss_pct=float(data["hard_max_loss_pct"]) if data.get("hard_max_loss_pct") is not None else None,
+            source=str(data.get("source", "regime_specific")),
+        )
+
 
 @dataclass(frozen=True)
 class ExpertOutput:
@@ -272,7 +493,9 @@ class ExpertOutput:
 
     # Debug info
     model_output: float  # raw model score before thresholding
-    regime_used: RegimeType = RegimeType.UNKNOWN
+    regime_used: RegimeLike = RegimeType.UNKNOWN
+    exit_plan: Optional[ExitPlan] = None
+    instance_id: Optional[str] = None
 
 
 @dataclass(frozen=True)

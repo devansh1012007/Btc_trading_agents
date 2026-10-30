@@ -12,6 +12,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
+from ..execution.cost_model import CostModel
 from ..labeling.hold_policy import HoldPolicy, model_alignment_problem
 from ..state.contracts import (
     FEATURE_SCHEMA_VERSION,
@@ -56,12 +57,13 @@ class OpportunityFilter:
     def __init__(
         self, config: dict, labeling_config: dict, model_path: Optional[str] = None,
         data_granularity: str = "1m", hold_policy: Optional[HoldPolicy] = None,
-        require_aligned_models: bool = False,
+        require_aligned_models: bool = False, cost_model: Optional[CostModel] = None,
     ):
         self.hold_policy = hold_policy
         self.require_aligned_models = require_aligned_models
         self.config = config
         self.labeling_config = labeling_config
+        self.cost_model = cost_model or CostModel.from_config({"labeling": dict(labeling_config or {})})
         self.data_granularity = data_granularity
         self.hard_rules = config.get("hard_rules", {})
         self.regime_overrides = config.get("regime_overrides", {})
@@ -129,7 +131,7 @@ class OpportunityFilter:
         failed_rules: List[str] = []
 
         best = expert_outputs.get_best_by_confidence()
-        round_trip_cost = self.labeling_config.get("fee_pct", 0.0) * 2 + self.labeling_config.get("slippage_buffer_pct", 0.0)
+        round_trip_cost = self.cost_model.opportunity_filter_cost_pct(market=market, fv=fv) if self.labeling_config or self.cost_model.explicit_costs_block else 0.0
         edge_vs_fees = (best.expected_return - round_trip_cost) if best else -round_trip_cost
 
         if edge_vs_fees < cfg.get("edge_vs_fees_threshold", 0.0):
@@ -221,3 +223,94 @@ class OpportunityFilter:
         midpoint = (floor + ceiling) / 2
         span = (ceiling - floor) / 2
         return float(np.clip(1.0 - abs(recent_vol - midpoint) / span, 0.0, 1.0))
+
+
+    def evaluate_pre_filter(
+        self,
+        regime: RegimeState,
+        zone_map: Optional[ZoneMap],
+        market: MarketSnapshot,
+        fv: FeatureVector,
+    ) -> OpportunityScore:
+        """Stage 1 of `staged` order (C1): environment gates (spread, depth, volatility, regime)
+        evaluated BEFORE experts/router run."""
+        cfg = self._effective_hard_rules(regime)
+        failed_rules: List[str] = []
+
+        if market.spread_pct > cfg.get("max_spread_pct", float("inf")):
+            failed_rules.append(f"spread_too_wide({market.spread_pct:.4f})")
+
+        depth_usdt = (market.bid_volume + market.ask_volume) * market.close
+        if depth_usdt < cfg.get("min_depth_usdt", 0.0):
+            failed_rules.append(f"insufficient_depth({depth_usdt:.2f})")
+
+        recent_vol = fv.volatility_medium
+        if recent_vol < cfg.get("volatility_floor_pct", 0.0):
+            failed_rules.append(f"market_too_dead({recent_vol:.4f})")
+        if recent_vol > cfg.get("volatility_ceiling_pct", float("inf")):
+            failed_rules.append(f"volatility_too_high({recent_vol:.4f})")
+
+        reject_regimes = parse_regime_list(cfg.get("reject_on_regime", []))
+        if regime.primary_regime in reject_regimes:
+            failed_rules.append(f"regime_blocked({regime.primary_regime.value})")
+
+        tradable = len(failed_rules) == 0
+        liquidity_score = self._liquidity_score(market, cfg)
+        volatility_score = self._volatility_score(recent_vol, cfg)
+        regime_acceptability = 0.0 if regime.primary_regime in reject_regimes else regime.regime_confidence
+        environment_quality = float(np.mean([liquidity_score, volatility_score, regime_acceptability]))
+
+        return OpportunityScore(
+            timestamp=fv.timestamp,
+            symbol=fv.symbol,
+            tradable=tradable,
+            tradable_probability=1.0 if tradable else 0.0,
+            environment_quality=environment_quality,
+            opportunity_strength=0.0,
+            failed_rules=failed_rules,
+            edge_vs_fees=0.0,
+            liquidity_score=liquidity_score,
+            volatility_score=volatility_score,
+            expert_consensus_score=0.0,
+            regime_acceptability=regime_acceptability,
+        )
+
+    def evaluate_confirm(
+        self,
+        expert_outputs: ExpertOutputs,
+        router_decision,
+        regime: RegimeState,
+        zone_map: Optional[ZoneMap],
+        market: MarketSnapshot,
+        fv: FeatureVector,
+    ) -> OpportunityScore:
+        """Stage 2 of `staged` order (C1): evaluate edge-vs-fees, confidence, and ML opportunity
+        model on the ROUTER-SELECTED expert after `router.decide`."""
+        score = self.evaluate(expert_outputs, regime, zone_map, market, fv)
+        if router_decision is None or router_decision.selected_expert == "no_trade":
+            return score
+        selected = expert_outputs.get_by_name(router_decision.selected_expert)
+        if selected is None:
+            return score
+        cfg = self._effective_hard_rules(regime)
+        round_trip_cost = (
+            self.cost_model.opportunity_filter_cost_pct(market=market, fv=fv)
+            if self.labeling_config or self.cost_model.explicit_costs_block
+            else 0.0
+        )
+        sel_edge = selected.expected_return - round_trip_cost
+        failed = list(score.failed_rules)
+        if sel_edge < cfg.get("edge_vs_fees_threshold", 0.0):
+            rule_str = f"selected_edge_below_threshold({sel_edge:.4f})"
+            if rule_str not in failed:
+                failed.append(rule_str)
+        tradable = score.tradable and (len(failed) == 0)
+        from dataclasses import replace as dc_replace
+        return dc_replace(
+            score,
+            tradable=tradable,
+            tradable_probability=score.tradable_probability if tradable else 0.0,
+            failed_rules=failed,
+            edge_vs_fees=sel_edge,
+            opportunity_strength=selected.reward_to_risk,
+        )

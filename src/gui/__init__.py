@@ -96,8 +96,8 @@ from .timeframes import (
 def __getattr__(name: str) -> Any:
     """Import the replay engine lazily.
 
-    ``src.gui.replay`` pulls in the whole pipeline -- and through it
-    ``ccxt`` -- which costs ~1.5s. A caller that only wants to read
+    ``src.gui.replay`` pulls in the whole pipeline -- and through it the
+    exchange connector -- which costs ~1.5s. A caller that only wants to read
     artifacts or compute indicators should not pay for it, so the
     replay names are resolved on first use instead of at import time.
     """

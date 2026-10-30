@@ -29,6 +29,9 @@ from ..utils.time_utils import epoch_seconds
 
 #: Timeframes the system can actually STORE as base bars.
 BASE_TIMEFRAMES: Dict[str, int] = {
+    "1s": 1,
+    "2s": 2,
+    "5s": 5,
     "10s": 10,
     "30s": 30,
     "1m": 60,
@@ -37,6 +40,9 @@ BASE_TIMEFRAMES: Dict[str, int] = {
 
 #: Timeframes the GUI can DISPLAY, smallest first.
 DISPLAY_TIMEFRAMES: Dict[str, int] = {
+    "1s": 1,
+    "2s": 2,
+    "5s": 5,
     "10s": 10,
     "30s": 30,
     "1m": 60,
@@ -58,6 +64,9 @@ DISPLAY_TIMEFRAMES: Dict[str, int] = {
 
 #: pandas resample rule per display timeframe.
 _PANDAS_RULES: Dict[str, str] = {
+    "1s": "1s",
+    "2s": "2s",
+    "5s": "5s",
     "10s": "10s",
     "30s": "30s",
     "1m": "1min",

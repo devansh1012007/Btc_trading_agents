@@ -83,6 +83,8 @@ def _expert_output_to_dict(output: ExpertOutput) -> Dict[str, Any]:
         "zone_aware": bool(output.zone_aware),
         "model_output": float(output.model_output),
         "regime_used": output.regime_used.value,
+        "exit_plan": output.exit_plan.to_dict() if output.exit_plan is not None else None,
+        "instance_id": output.instance_id,
     }
 
 
@@ -135,13 +137,23 @@ def system_state_to_dict(state: SystemState) -> Dict[str, Any]:
 
     if state.regime_state:
         rs = state.regime_state
+        probs_json_str = json.dumps({k2: float(v2) for k2, v2 in rs.regime_probs.items()}, sort_keys=True)
         d.update({f'regime_{k}': v for k, v in {
             'primary': rs.primary_regime.value, 'confidence': rs.regime_confidence,
-            'prob_up': rs.prob_trending_up, 'prob_down': rs.prob_trending_down,
-            'prob_chop': rs.prob_chop_range, 'prob_panic': rs.prob_panic_spike,
+            'prob_up': rs.get_prob("trending_up", 0.0), 'prob_down': rs.get_prob("trending_down", 0.0),
+            'prob_chop': rs.get_prob("chop_range", 0.0), 'prob_panic': rs.get_prob("panic_spike", 0.0),
+            'prob_trending_up': rs.get_prob("trending_up", 0.0),
+            'prob_trending_down': rs.get_prob("trending_down", 0.0),
+            'prob_chop_range': rs.get_prob("chop_range", 0.0),
+            'prob_panic_spike': rs.get_prob("panic_spike", 0.0),
             'age': rs.regime_age, 'persistence_score': rs.regime_persistence_score,
             'hmm_hidden_state': rs.hmm_hidden_state,
             'hmm_probabilities_json': json.dumps(rs.hmm_probabilities),
+            'set_id': rs.regime_set_id,
+            'regime_set_id': rs.regime_set_id,
+            'serving_source_used': rs.serving_source_used,
+            'probs_json': probs_json_str,
+            'regime_probs_json': probs_json_str,
         }.items()})
 
     if state.zone_map:

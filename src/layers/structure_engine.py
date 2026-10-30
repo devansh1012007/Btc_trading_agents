@@ -9,6 +9,11 @@ zone-survival model load.
 """
 import logging
 import pickle
+import hashlib
+import json
+from dataclasses import dataclass
+from typing import Any, Mapping
+
 from dataclasses import replace
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -20,6 +25,51 @@ from ..utils.rolling_buffer import RollingBarBuffer
 from .zone_survival_features import features_to_row, zone_survival_features
 
 logger = logging.getLogger(__name__)
+
+
+
+@dataclass(frozen=True)
+class ZoneRefreshPolicy:
+    mode: str = "every_bar"  # "every_bar" | "every_n" | "event"
+    every_n_bars: int = 5
+    on_regime_change: bool = True
+    volatility_spike_z: float = 2.0
+    price_displacement_pct: float = 1.0
+    on_active_zone_breakout: bool = True
+
+    @classmethod
+    def from_config(cls, config: Optional[Mapping[str, Any]] = None) -> "ZoneRefreshPolicy":
+        if not config:
+            return cls()
+        struct_cfg = config.get("structure") if "structure" in config else config
+        if not isinstance(struct_cfg, Mapping):
+            return cls()
+        ref = struct_cfg.get("refresh") or {}
+        if not ref:
+            return cls(mode=str(struct_cfg.get("refresh_mode", "every_bar")))
+        ev = ref.get("event_triggers") or {}
+        return cls(
+            mode=str(ref.get("mode", "every_bar")),
+            every_n_bars=max(1, int(ref.get("every_n_bars", 5))),
+            on_regime_change=bool(ev.get("regime_change", True)),
+            volatility_spike_z=float(ev.get("volatility_spike_z", 2.0)),
+            price_displacement_pct=float(ev.get("price_displacement_pct", 1.0)),
+            on_active_zone_breakout=bool(ev.get("active_zone_breakout", True)),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "mode": self.mode,
+            "every_n_bars": self.every_n_bars,
+            "on_regime_change": self.on_regime_change,
+            "volatility_spike_z": round(self.volatility_spike_z, 6),
+            "price_displacement_pct": round(self.price_displacement_pct, 6),
+            "on_active_zone_breakout": self.on_active_zone_breakout,
+        }
+
+    def policy_hash(self) -> str:
+        raw = json.dumps(self.to_dict(), sort_keys=True)
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
 class DynamicStructureEngine:
@@ -35,6 +85,9 @@ class DynamicStructureEngine:
         zone_survival_model_path: Optional[str] = None,
         zone_survival_blend_weight: float = 0.0,
         data_granularity: str = "1m",
+        expected_regime_set_hash: Optional[str] = None,
+        refresh_policy: Optional[ZoneRefreshPolicy] = None,
+        expected_refresh_policy_hash: Optional[str] = None,
     ):
         """
         Args:
@@ -50,10 +103,18 @@ class DynamicStructureEngine:
         self.breakout_survival_penalty = breakout_survival_penalty
         self.zone_survival_blend_weight = zone_survival_blend_weight
         self.data_granularity = data_granularity
+        self.expected_regime_set_hash = expected_regime_set_hash
+        self.refresh_policy = refresh_policy or ZoneRefreshPolicy()
+        self.expected_refresh_policy_hash = expected_refresh_policy_hash
 
         self.price_history = RollingBarBuffer(maxlen=lookback_bars)
         self.zones: Dict[str, Zone] = {}
         self.bar_counter = 0
+        self.refresh_count = 0
+        self._last_refresh_bar = 0
+        self._last_refresh_price: Optional[float] = None
+        self._last_refresh_regime: Optional[str] = None
+        self._broke_since_last_refresh = False
 
         self._confirmed_at_bar: Dict[str, int] = {}
         self._latest_regime_state: Optional[RegimeState] = None
@@ -101,14 +162,23 @@ class DynamicStructureEngine:
                 zones=[],
             )
 
-        self._generate_zones_from_pivots()
-        self._generate_zones_from_volume()
+        do_refresh = self._should_refresh(current_price, regime_state)
+        if do_refresh:
+            self._generate_zones_from_pivots()
+            self._generate_zones_from_volume()
 
+        # Touch tracking, age updates, and decay ALWAYS run on every bar
         self._process_price_action()
-
         self._update_zone_ages()
         self._decay_untouched_zones()
-        self._merge_nearby_zones(current_price)
+
+        if do_refresh:
+            self._merge_nearby_zones(current_price)
+            self.refresh_count += 1
+            self._last_refresh_bar = self.bar_counter
+            self._last_refresh_price = current_price
+            self._last_refresh_regime = regime_state.primary_regime.value if regime_state is not None else None
+            self._broke_since_last_refresh = False
 
         active_zones = [z for z in self.zones.values() if z.survival_probability > 0.1]
         active_zones.sort(key=lambda z: abs(z.mid - current_price))
@@ -164,6 +234,7 @@ class DynamicStructureEngine:
         rule_based_survival = rejection_score * self._time_decay_factor(zone)
         if broke_through:
             rule_based_survival *= self.breakout_survival_penalty
+            self._broke_since_last_refresh = True
 
         survival_probability = self._blend_survival_probability(zone_id, rule_based_survival)
 
@@ -271,6 +342,25 @@ class DynamicStructureEngine:
             )
             return
 
+        trained_rset = payload.get("regime_set_hash") or (payload.get("training_alignment") or {}).get("regime_set_hash")
+        if self.expected_regime_set_hash is not None and trained_rset not in (None, self.expected_regime_set_hash):
+            logger.warning(
+                f"Zone survival model at {p} trained on regime_set_hash={trained_rset}, "
+                f"running on {self.expected_regime_set_hash}. Treating as absent."
+            )
+            return
+
+        trained_ref_hash = payload.get("refresh_policy_hash") or (payload.get("training_alignment") or {}).get("refresh_policy_hash")
+        expected_ref = self.expected_refresh_policy_hash or (
+            self.refresh_policy.policy_hash() if self.refresh_policy.mode != "every_bar" else None
+        )
+        if expected_ref is not None and trained_ref_hash not in (None, expected_ref):
+            logger.warning(
+                f"Zone survival model at {p} trained on refresh_policy_hash={trained_ref_hash}, "
+                f"running on {expected_ref}. Treating as absent."
+            )
+            return
+
         self._zone_survival_model = payload["model"]
         self._zone_survival_feature_names = payload.get("feature_names")
         logger.info(f"Loaded zone survival model from {p}")
@@ -291,7 +381,7 @@ class DynamicStructureEngine:
             day_of_week=bar.get('day_of_week', 0),
             regime_state=self._latest_regime_state,
         )
-        row = features_to_row(features)
+        row = features_to_row(features, self._zone_survival_feature_names)
 
         try:
             ml_prediction = float(self._zone_survival_model.predict_proba(row)[0][1])
@@ -329,32 +419,34 @@ class DynamicStructureEngine:
     # ------------------------------------------------------------------
 
     def _generate_zones_from_pivots(self) -> None:
-        if len(self.price_history) < self.pivot_window + 1:
+        n = len(self.price_history)
+        pw = self.pivot_window
+        if n < pw + 1:
             return
 
-        highs = np.array([b['high'] for b in self.price_history])
-        lows = np.array([b['low'] for b in self.price_history])
-        timestamps = np.array([b['timestamp'] for b in self.price_history])
+        highs = [float(b['high']) for b in self.price_history]
+        lows = [float(b['low']) for b in self.price_history]
+        timestamps = [int(b['timestamp']) for b in self.price_history]
 
-        for i in range(self.pivot_window, len(highs) - self.pivot_window):
-            if highs[i] == np.max(highs[i - self.pivot_window:i + self.pivot_window + 1]):
-                zone_price = highs[i]
+        for i in range(pw, n - pw):
+            hi = highs[i]
+            if hi == max(highs[i - pw:i + pw + 1]):
                 zone_id = f"pivot_high_{timestamps[i]}"
                 if zone_id not in self.zones:
-                    zone_width = zone_price * 0.5 / 100
+                    zone_width = hi * 0.5 / 100
                     self._add_or_merge_zone(
-                        zone_id=zone_id, lower=zone_price - zone_width, upper=zone_price + zone_width,
+                        zone_id=zone_id, lower=hi - zone_width, upper=hi + zone_width,
                         zone_type="resistance", created_at=timestamps[i],
                     )
 
-        for i in range(self.pivot_window, len(lows) - self.pivot_window):
-            if lows[i] == np.min(lows[i - self.pivot_window:i + self.pivot_window + 1]):
-                zone_price = lows[i]
+        for i in range(pw, n - pw):
+            lo = lows[i]
+            if lo == min(lows[i - pw:i + pw + 1]):
                 zone_id = f"pivot_low_{timestamps[i]}"
                 if zone_id not in self.zones:
-                    zone_width = zone_price * 0.5 / 100
+                    zone_width = lo * 0.5 / 100
                     self._add_or_merge_zone(
-                        zone_id=zone_id, lower=zone_price - zone_width, upper=zone_price + zone_width,
+                        zone_id=zone_id, lower=lo - zone_width, upper=lo + zone_width,
                         zone_type="support", created_at=timestamps[i],
                     )
 
@@ -470,3 +562,22 @@ class DynamicStructureEngine:
             if zone_id in self.zones:
                 del self.zones[zone_id]
                 self._confirmed_at_bar.pop(zone_id, None)
+
+    def _should_refresh(self, current_price: float, regime_state: Optional[RegimeState]) -> bool:
+        mode = self.refresh_policy.mode
+        if mode == "every_bar" or self._last_refresh_bar == 0 or not self.zones:
+            return True
+        if mode == "every_n":
+            return (self.bar_counter - self._last_refresh_bar) >= self.refresh_policy.every_n_bars
+        if mode == "event":
+            if self.refresh_policy.on_active_zone_breakout and self._broke_since_last_refresh:
+                return True
+            if self.refresh_policy.on_regime_change and regime_state is not None:
+                if self._last_refresh_regime is not None and regime_state.primary_regime.value != self._last_refresh_regime:
+                    return True
+            if self._last_refresh_price and self._last_refresh_price > 0:
+                disp_pct = abs(current_price - self._last_refresh_price) / self._last_refresh_price * 100.0
+                if disp_pct >= self.refresh_policy.price_displacement_pct:
+                    return True
+            return False
+        return True

@@ -43,13 +43,17 @@ class BaseExpert(ABC):
     def __init__(
         self, config: dict, model_path: Optional[str] = None, data_granularity: str = "1m",
         hold_policy: Optional[HoldPolicy] = None, require_aligned_models: bool = False,
+        *, instance_id: Optional[str] = None, enabled: bool = True, plan_head=None,
     ):
         self.config = config
         self.data_granularity = data_granularity
-        # The minimum-trade-duration contract (src/labeling/hold_policy.py).
-        # ``None`` (an expert built without a config) disables the checks.
         self.hold_policy = hold_policy
         self.require_aligned_models = require_aligned_models
+        self.instance_id = instance_id
+        if instance_id:
+            self.expert_name = instance_id
+        self.enabled = bool(config.get("enabled", enabled))
+        self.plan_head = plan_head
 
         self._model = None
         self._model_feature_names = None
@@ -152,6 +156,15 @@ class BaseExpert(ABC):
         return "; ".join(problems) if problems else None
 
     def evaluate(self, fv: FeatureVector, zones: ZoneMap, regime: RegimeState) -> ExpertOutput:
+        if not self.enabled:
+            return ExpertOutput(
+                expert_name=self.expert_name, timestamp=fv.timestamp, symbol=fv.symbol,
+                action=ExpertAction.NO_TRADE, confidence=0.0, no_trade_probability=1.0,
+                expected_return=0.0, expected_risk=0.0, reward_to_risk=0.0,
+                invalidation_distance=0.0, zone_aware=False, model_output=0.0,
+                regime_used=regime.primary_regime if regime else RegimeType.UNKNOWN,
+                instance_id=self.instance_id,
+            )
         direction = None if self.duration_blocked_reason else self.propose_candidate(fv, zones, regime)
         if direction is None:
             return ExpertOutput(
@@ -160,5 +173,14 @@ class BaseExpert(ABC):
                 expected_return=0.0, expected_risk=0.0, reward_to_risk=0.0,
                 invalidation_distance=0.0, zone_aware=False, model_output=0.0,
                 regime_used=regime.primary_regime if regime else RegimeType.UNKNOWN,
+                instance_id=self.instance_id,
             )
-        return self.score(fv, zones, regime, direction)
+        out = self.score(fv, zones, regime, direction)
+        if self.plan_head is not None or self.instance_id is not None:
+            from dataclasses import replace as dc_replace
+            plan = out.exit_plan
+            if plan is None and self.plan_head is not None:
+                feats = {"volatility_medium": fv.volatility_medium, "regime_confidence": regime.regime_confidence}
+                plan, _, _ = self.plan_head.select_best_plan(feats, max(fv.volatility_medium, 1e-4))
+            out = dc_replace(out, exit_plan=plan, instance_id=self.instance_id)
+        return out

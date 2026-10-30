@@ -68,8 +68,17 @@ def check_regime_distribution(
     if not recent_regimes:
         return {"panic_frequency": 0.0, "panic_alert": False, "avg_confidence": None, "low_confidence_alert": False}
 
-    panic_frequency = sum(1 for r in recent_regimes if r == "panic_spike") / len(recent_regimes)
-    result = {"panic_frequency": panic_frequency, "panic_alert": panic_frequency > panic_frequency_alert_threshold}
+    n = len(recent_regimes)
+    counts: Dict[str, int] = {}
+    for r in recent_regimes:
+        counts[str(r)] = counts.get(str(r), 0) + 1
+    shares = {k: v / n for k, v in counts.items()}
+    panic_frequency = shares.get("panic_spike", 0.0)
+    result: Dict = {
+        "panic_frequency": panic_frequency,
+        "panic_alert": panic_frequency > panic_frequency_alert_threshold,
+        "regime_shares": shares,
+    }
 
     if recent_confidences:
         avg_confidence = float(np.mean(recent_confidences))

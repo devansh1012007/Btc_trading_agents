@@ -220,6 +220,8 @@ def validate_hold_policy(config: dict) -> None:
 def validate_config_consistency(config: dict, db_path: str = "data/registry.db") -> None:
     """Run all consistency checks. Raises ConfigConsistencyError on failure."""
     logger.info("Running cross-layer consistency validation...")
+    from .switchboard import validate_switchboard
+    validate_switchboard(config)
     validate_hold_policy(config)
     validate_unit_consistency(config)
     validate_threshold_plausibility(config)

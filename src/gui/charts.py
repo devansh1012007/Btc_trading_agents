@@ -549,3 +549,64 @@ def figure_to_html(fig: go.Figure, *, title: str = "Trade Map") -> str:
         include_plotlyjs="inline", full_html=True, div_id=EXPORT_DIV_ID,
         config=PLOTLY_CONFIG, default_width="100%", default_height="100%",
     ).replace("<head>", f"<head><title>{title}</title>", 1)
+
+
+
+def downsample_lod(bars: pd.DataFrame, max_points: int = 2000) -> pd.DataFrame:
+    """Level-of-detail (LOD) downsampler for large 1s/tick candle frames.
+
+    Preserves open, high (max), low (min), close, and summed volume per bucket
+    so no price extrema are lost while keeping rendered trace points <= `max_points`.
+    """
+    if bars.empty or len(bars) <= max_points:
+        return bars.copy()
+    stride = int(np.ceil(len(bars) / max(1, int(max_points))))
+    group_ids = np.arange(len(bars)) // stride
+    grouped = bars.assign(_lod_g=group_ids).groupby("_lod_g", sort=True)
+    positions = grouped.indices
+    first_idx = np.asarray([positions[g][0] for g in grouped.groups], dtype="int64")
+    last_idx = np.asarray([positions[g][-1] for g in grouped.groups], dtype="int64")
+    return pd.DataFrame({
+        "timestamp": bars["timestamp"].to_numpy()[first_idx],
+        "open": bars["open"].to_numpy()[first_idx],
+        "high": grouped["high"].max().to_numpy(),
+        "low": grouped["low"].min().to_numpy(),
+        "close": bars["close"].to_numpy()[last_idx],
+        "volume": grouped["volume"].sum().to_numpy(),
+    }).reset_index(drop=True)
+
+
+def load_playback_slice(bars: pd.DataFrame, start_ts: int, window_seconds: int = 60) -> pd.DataFrame:
+    """Load a bounded `[start_ts, start_ts + window_seconds)` slice for 1s/tick playback."""
+    if bars.empty:
+        return bars.copy()
+    end_ts = int(start_ts) + max(1, int(window_seconds))
+    mask = (bars["timestamp"] >= int(start_ts)) & (bars["timestamp"] < end_ts)
+    return bars.loc[mask].reset_index(drop=True)
+
+
+def build_models_scorecard_chart(bundle: SessionBundle) -> go.Figure:
+    """Render per-model rolling Brier score and realized expectancy from `bundle.model_scorecards`."""
+    fig = go.Figure()
+    cards = getattr(bundle, "model_scorecards", None) or {}
+    if not cards:
+        fig.update_layout(
+            template="plotly_dark",
+            paper_bgcolor=theme.BACKGROUND,
+            plot_bgcolor=theme.PANEL,
+            annotations=[dict(text="No model scorecards recorded in this session", showarrow=False, font=dict(size=14, color=theme.TEXT_MUTED))],
+        )
+        return fig
+    names = sorted(cards.keys())
+    briers = [float(getattr(cards[k], "brier_score", cards[k].get("brier_score", 0.0) if isinstance(cards[k], dict) else 0.0)) for k in names]
+    exps = [float(getattr(cards[k], "realized_expectancy", cards[k].get("realized_expectancy", 0.0) if isinstance(cards[k], dict) else 0.0)) for k in names]
+    fig.add_trace(go.Bar(x=names, y=briers, name="Brier Score", marker_color=theme.EQUITY, uid="models-brier"))
+    fig.add_trace(go.Bar(x=names, y=exps, name="Realized Expectancy (%)", marker_color=theme.WIN, uid="models-expectancy"))
+    fig.update_layout(
+        template="plotly_dark",
+        paper_bgcolor=theme.BACKGROUND,
+        plot_bgcolor=theme.PANEL,
+        barmode="group",
+        title="Model Ledger Scorecards",
+    )
+    return fig

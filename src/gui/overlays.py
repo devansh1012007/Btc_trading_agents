@@ -55,6 +55,8 @@ class EntryMarker:
     risk_score: Optional[float]
     take_profit_price: Optional[float]   # known at entry
     stop_loss_price: Optional[float]     # known at entry
+    lane_id: int = 0
+    order_ts: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -64,10 +66,11 @@ class ExitMarker:
     price: float
     direction: int
     trade_id: str
-    reason: str                  # take_profit | stop_loss | timeout
+    reason: str                  # one of EXIT_REASONS
     pnl_usdt: float
     pnl_pct: float
     bars_held: Optional[int]
+    lane_id: int = 0
 
 
 @dataclass(frozen=True)
@@ -85,6 +88,34 @@ class TradeSpan:
     direction: int
     pnl_usdt: Optional[float]
     is_open: bool
+    lane_id: int = 0
+
+
+@dataclass(frozen=True)
+class TrailLine:
+    trade_id: str
+    ts: Tuple[int, ...] = ()
+    level: Tuple[float, ...] = ()
+    lane_id: int = 0
+
+
+@dataclass(frozen=True)
+class DelayConnector:
+    trade_id: str
+    kind: str  # "entry" | "exit"
+    order_ts: int
+    fill_ts: int
+    order_price: float
+    fill_price: float
+
+
+@dataclass(frozen=True)
+class HaltBand:
+    kind: str  # "halt" | "cooldown"
+    target: str
+    start_ts: int
+    end_ts: int
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -135,6 +166,9 @@ class OverlaySet:
     zones: List[ZoneBand] = field(default_factory=list)
     regimes: List[RegimeBand] = field(default_factory=list)
     equity: EquityCurve = field(default_factory=EquityCurve)
+    trail_lines: List[TrailLine] = field(default_factory=list)
+    delay_connectors: List[DelayConnector] = field(default_factory=list)
+    halt_bands: List[HaltBand] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +206,43 @@ def _barrier(entry: float, pct: Optional[float], direction: int, favourable: boo
 # trades
 # ---------------------------------------------------------------------------
 
+
+
+def assign_trade_lanes(records: List[dict]) -> Dict[str, int]:
+    """Assign deterministic non-overlapping lane indices `0, 1, ...` to trades."""
+    items = []
+    for idx, r in enumerate(records):
+        ent = r.get("entry_timestamp")
+        if ent is None or pd.isna(ent):
+            continue
+        ent_i = int(ent)
+        ext = r.get("exit_timestamp")
+        reason = _text(r.get("exit_reason"), "")
+        is_open = (ext is None or pd.isna(ext)) or reason == "open"
+        ext_i = int(ext) if not is_open else 2_147_483_647
+        tid = _text(r.get("trade_id"), f"trade-{ent_i}-{idx}")
+        explicit = r.get("lane_id")
+        items.append((ent_i, ext_i, tid, int(explicit) if (explicit is not None and not pd.isna(explicit)) else None))
+
+    items.sort(key=lambda x: (x[0], x[2]))
+    lane_end: Dict[int, int] = {}
+    assigned: Dict[str, int] = {}
+    for ent_i, ext_i, tid, explicit in items:
+        # Free lanes whose previous trade already exited at or before ent_i
+        for l_id in list(lane_end.keys()):
+            if lane_end[l_id] <= ent_i:
+                del lane_end[l_id]
+        if explicit is not None and explicit not in lane_end:
+            chosen = explicit
+        else:
+            chosen = 0
+            while chosen in lane_end:
+                chosen += 1
+        lane_end[chosen] = ext_i
+        assigned[tid] = chosen
+    return assigned
+
+
 def build_trade_overlays(
     bundle: SessionBundle, timeframe: str, bars_tf: pd.DataFrame
 ) -> Tuple[List[EntryMarker], List[ExitMarker], List[TradeSpan]]:
@@ -185,7 +256,10 @@ def build_trade_overlays(
     exits: List[ExitMarker] = []
     spans: List[TradeSpan] = []
 
-    for row in bundle.trades.to_dict("records"):
+    records = bundle.trades.to_dict("records")
+    lane_map = assign_trade_lanes(records)
+
+    for row in records:
         entry_ts = row.get("entry_timestamp")
         if entry_ts is None or pd.isna(entry_ts):
             continue
@@ -200,6 +274,7 @@ def build_trade_overlays(
         tp_pct = _finite(row.get("take_profit_pct"))
         sl_pct = _finite(row.get("stop_loss_pct"))
 
+        lane_id = lane_map.get(trade_id, 0)
         if entry_bucket in visible:
             entries.append(EntryMarker(
                 ts=entry_bucket, entry_ts=entry_ts, price=entry_price, direction=direction,
@@ -209,6 +284,7 @@ def build_trade_overlays(
                 risk_score=_finite(row.get("risk_score")),
                 take_profit_price=_barrier(entry_price, tp_pct, direction, True),
                 stop_loss_price=_barrier(entry_price, sl_pct, direction, False),
+                lane_id=lane_id,
             ))
 
         exit_ts_raw = row.get("exit_timestamp")
@@ -228,17 +304,18 @@ def build_trade_overlays(
                         pnl_usdt=_finite(row.get("pnl_usdt")) or 0.0,
                         pnl_pct=_finite(row.get("pnl_pct")) or 0.0,
                         bars_held=(int(row["bars_held"]) if _finite(row.get("bars_held")) is not None else None),
+                        lane_id=lane_id,
                     ))
                 spans.append(TradeSpan(
                     trade_id=trade_id, entry_ts=entry_bucket, exit_ts=exit_bucket,
                     entry_price=entry_price, exit_price=exit_price, direction=direction,
-                    pnl_usdt=_finite(row.get("pnl_usdt")), is_open=False,
+                    pnl_usdt=_finite(row.get("pnl_usdt")), is_open=False, lane_id=lane_id,
                 ))
         else:
             spans.append(TradeSpan(
                 trade_id=trade_id, entry_ts=entry_bucket, exit_ts=None,
                 entry_price=entry_price, exit_price=None, direction=direction,
-                pnl_usdt=None, is_open=True,
+                pnl_usdt=None, is_open=True, lane_id=lane_id,
             ))
 
     return entries, exits, spans

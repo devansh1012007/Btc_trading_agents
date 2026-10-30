@@ -86,11 +86,13 @@ def replay_full_stack(
         hold_policy, require_aligned = alignment_settings(config)
         experts = build_experts(config, data_granularity=data_granularity)
         expert_layer = ExpertLayer(experts)
+        from ..execution.cost_model import CostModel
         opportunity_filter = OpportunityFilter(
             config=opp_cfg, labeling_config=labeling_cfg,
             model_path=opp_cfg.get("ml_model", {}).get("model_path"),
             data_granularity=data_granularity,
             hold_policy=hold_policy, require_aligned_models=require_aligned,
+            cost_model=CostModel.from_config(config),
         )
         router = Router(
             config=router_cfg, model_path=router_cfg.get("model", {}).get("model_path"),
@@ -168,7 +170,8 @@ def harvest_zone_touch_candidates(
 
     labeling_cfg = config.get("labeling", {})
     max_holding_bars = labeling_cfg.get("max_holding_bars", 5)
-    fee_pct = labeling_cfg.get("fee_pct", 0.04)
+    from ..execution.cost_model import CostModel
+    fee_pct = CostModel.from_config(config).fee_pct("entry")
     k_tp_default = labeling_cfg.get("k_tp", 1.5)
     k_sl_default = labeling_cfg.get("k_sl", 1.0)
     regime_overrides = labeling_cfg.get("regime_specific_barriers", {})

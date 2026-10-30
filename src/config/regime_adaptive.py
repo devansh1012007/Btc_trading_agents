@@ -29,6 +29,8 @@ def resolve_regime_param(param_block: Dict[str, Any], current_regime: RegimeType
     by_regime = param_block.get("by_regime", {})
     if current_regime.name in by_regime:
         return float(by_regime[current_regime.name])
+    if current_regime.value in by_regime:
+        return float(by_regime[current_regime.value])
     return float(param_block.get("default", 0.0))
 
 
@@ -48,4 +50,6 @@ def resolve_regime_param_list(param_block: Dict[str, Any], current_regime: Regim
     by_regime = param_block.get("by_regime", {})
     if current_regime.name in by_regime:
         return by_regime[current_regime.name]
+    if current_regime.value in by_regime:
+        return by_regime[current_regime.value]
     return param_block.get("default", default)

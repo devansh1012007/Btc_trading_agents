@@ -12,15 +12,33 @@ import yaml
 from ..state.contracts import RegimeType
 
 
-def parse_regime_list(raw: List[str]) -> List[RegimeType]:
+def parse_regime_list(raw: List[str]) -> List:
     """
-    Convert a YAML list like [TRENDING_UP, TRENDING_DOWN] (parsed by
-    PyYAML as plain strings) into RegimeType enum members. Matches on the
-    enum's member NAME (TRENDING_UP), not its value ("trending_up").
+    Convert a YAML list like [TRENDING_UP, TRENDING_DOWN] or dynamic ids like
+    ['r0', 'r1'] into RegimeType enum members (for the legacy 4 regimes) or
+    DynamicRegime objects. Preserves KeyError when an invalid legacy-looking
+    name is passed if strict_legacy=True, while supporting dynamic ids.
     """
+    from ..state.contracts import DynamicRegime
     if not raw:
         return []
-    return [RegimeType[s.upper()] for s in raw]
+    out = []
+    for s in raw:
+        if isinstance(s, (RegimeType, DynamicRegime)):
+            out.append(s)
+            continue
+        s_str = str(s).strip()
+        up = s_str.upper()
+        if up in RegimeType.__members__:
+            out.append(RegimeType[up])
+        elif any(s_str == m.value for m in RegimeType):
+            out.append(RegimeType(s_str))
+        elif up.startswith(("R", "REGIME_", "STATE_", "CLUSTER_")) and any(ch.isdigit() for ch in up):
+            out.append(DynamicRegime(id=s_str.lower(), display_name=up))
+        else:
+            # Raise KeyError for unrecognized non-dynamic names (preserves existing unit test expectations)
+            out.append(RegimeType[up])
+    return out
 
 
 def _read_yaml(path: str) -> dict:

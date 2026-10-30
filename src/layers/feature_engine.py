@@ -43,6 +43,26 @@ class FeatureEngine:
         self.sma_periods = fe_cfg.get("sma_periods", [9, 21])
         self.volume_zscore_period = fe_cfg.get("volume_zscore_period", 20)
 
+        # Optional time-horizon window specification (`features.windows_seconds`)
+        win_sec = fe_cfg.get("windows_seconds")
+        if isinstance(win_sec, dict) and win_sec:
+            from ..labeling.hold_policy import parse_granularity_seconds
+            gran = (self.config.get("system") or {}).get("data_granularity", "1m")
+            bar_s = max(1.0, parse_granularity_seconds(str(gran)))
+            if "short" in win_sec:
+                self.momentum_short = max(1, int(round(float(win_sec["short"]) / bar_s)))
+                self.volatility_short = max(2, int(round(float(win_sec["short"]) / bar_s)))
+            if "medium" in win_sec:
+                self.momentum_medium = max(2, int(round(float(win_sec["medium"]) / bar_s)))
+                self.volatility_medium = max(2, int(round(float(win_sec["medium"]) / bar_s)))
+            if "long" in win_sec:
+                self.momentum_long = max(3, int(round(float(win_sec["long"]) / bar_s)))
+                self.volatility_long = max(3, int(round(float(win_sec["long"]) / bar_s)))
+            required_len = max(self.lookback_bars, self.momentum_long + 5, self.volatility_long + 5, 30)
+            if required_len > self.lookback_bars:
+                self.lookback_bars = required_len
+                self.price_history = RollingBarBuffer(maxlen=required_len)
+
     def add_bar(self, snapshot: MarketSnapshot) -> None:
         self.price_history.append({
             'timestamp': snapshot.timestamp,
@@ -151,10 +171,13 @@ class FeatureEngine:
     def _macd_signal(prices: np.ndarray) -> float:
         if len(prices) < 26:
             return 0.0
-        exp1 = pd.Series(prices[-26:]).ewm(span=12).mean().iloc[-1]
-        exp2 = pd.Series(prices[-26:]).ewm(span=26).mean().iloc[-1]
-        macd = exp1 - exp2
-        return float(macd)
+        window = np.asarray(prices[-26:], dtype=np.float64)
+        idx = np.arange(len(window) - 1, -1, -1, dtype=np.float64)
+        w1 = (1.0 - 2.0 / 13.0) ** idx
+        w2 = (1.0 - 2.0 / 27.0) ** idx
+        exp1 = float(np.dot(window, w1) / w1.sum())
+        exp2 = float(np.dot(window, w2) / w2.sum())
+        return float(exp1 - exp2)
 
     @staticmethod
     def _orderflow_momentum(closes: np.ndarray, volumes: np.ndarray) -> float:

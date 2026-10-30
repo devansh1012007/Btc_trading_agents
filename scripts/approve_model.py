@@ -87,3 +87,45 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+def promote_bundle(
+    bundle,
+    *,
+    db_path: str = "data/registry.db",
+    expected_regime_set_hash: str | None = None,
+    check_files_on_disk: bool = True,
+) -> tuple[bool, str]:
+    """Validate and atomically record an approved `ModelBundle` in `bundles` table."""
+    from datetime import datetime, timezone
+
+    from src.registry.db import connect
+
+    if expected_regime_set_hash is not None and bundle.regime_set_hash not in (None, "", expected_regime_set_hash):
+        return False, f"Bundle regime_set_hash={bundle.regime_set_hash!r} != expected={expected_regime_set_hash!r}"
+
+    if not bundle.stage_artefacts:
+        return False, "Bundle has no stage_artefacts to promote"
+
+    err = bundle.verify_consistency(check_files_on_disk=check_files_on_disk)
+    if err is not None:
+        return False, f"Bundle consistency check failed: {err}"
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    with connect(db_path) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO bundles "
+            "(bundle_id, bundle_hash, regime_set_hash, manifest_json, status, trained_at, promoted_at, promoted_by) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                bundle.bundle_id,
+                bundle.bundle_hash,
+                bundle.regime_set_hash,
+                json.dumps(bundle.to_dict(), sort_keys=True),
+                "approved_active",
+                bundle.trained_at,
+                now_iso,
+                "cli",
+            ),
+        )
+    return True, f"Promoted bundle {bundle.bundle_id} ({bundle.bundle_hash})"

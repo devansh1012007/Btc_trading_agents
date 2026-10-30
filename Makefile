@@ -185,3 +185,7 @@ clean:
 	@find . -type f \( -name "*.pyc" -o -name "*.pyo" -o -name ".coverage" \) \
 		-not -path "./.venv/*" -delete 2>/dev/null || true
 	@echo "Cleaned."
+
+.PHONY: golden-update
+golden-update:
+	$(PYTHON) tests/golden/digest.py

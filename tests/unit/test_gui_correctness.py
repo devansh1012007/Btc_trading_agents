@@ -441,6 +441,11 @@ def _every_classifier_scenario():
     yield {"risk_decision": _risk_decision(False, "manual_kill_switch_active")}
     yield {"risk_decision": _risk_decision(False, "selected_expert_has_no_candidate")}
     yield {"risk_decision": _risk_decision(False, "invalidation_distance_too_tight(0.01)")}
+    yield {"risk_decision": _risk_decision(False, "portfolio_halt:rolling_loss")}
+    yield {"risk_decision": _risk_decision(False, "expert_cooldown:trend:stop_exit")}
+    yield {"risk_decision": _risk_decision(False, "concurrency_limit:max_concurrent(2)")}
+    yield {"risk_decision": _risk_decision(False, "exposure_limit:gross_exposure")}
+    yield {"risk_decision": _risk_decision(False, "governor_veto:size_below_min")}
     yield {"risk_decision": _risk_decision(False, "no_trade_selected"), "router_decision": router("no_trade")}
     yield {"opportunity_score": opp_veto}
     yield {"router_decision": router("no_trade", "opportunity_filter_rejected")}

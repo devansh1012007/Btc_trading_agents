@@ -112,8 +112,34 @@ def stage_name(stage: str) -> str:
     return STAGE_LABELS.get(stage, stage)
 
 
+_DYNAMIC_REGIME_PALETTE = (
+    "rgba(38,166,154,0.11)",
+    "rgba(77,163,255,0.11)",
+    "rgba(245,166,35,0.11)",
+    "rgba(239,83,80,0.11)",
+    "rgba(186,104,200,0.12)",
+    "rgba(38,198,218,0.11)",
+    "rgba(156,204,101,0.11)",
+    "rgba(255,112,67,0.11)",
+    "rgba(126,87,194,0.11)",
+    "rgba(236,64,122,0.11)",
+    "rgba(102,187,106,0.11)",
+    "rgba(41,182,246,0.11)",
+)
+
+
 def regime_colour(regime: str) -> str:
-    return REGIME_COLOURS.get(str(regime).lower(), REGIME_FALLBACK)
+    key = str(regime).lower()
+    if key in REGIME_COLOURS:
+        return REGIME_COLOURS[key]
+    import hashlib
+    idx = int(hashlib.sha256(key.encode("utf-8")).hexdigest()[:8], 16) % len(_DYNAMIC_REGIME_PALETTE)
+    return _DYNAMIC_REGIME_PALETTE[idx]
+
+
+def regime_palette(regime_ids) -> Dict[str, str]:
+    """Deterministic colour map for an arbitrary sequence of regime ids."""
+    return {str(rid): regime_colour(str(rid)) for rid in regime_ids}
 
 
 def pnl_colour(value: float) -> str:

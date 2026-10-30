@@ -639,6 +639,8 @@ def main():
     parser.add_argument("--env", default="paper", choices=["paper", "live"])
     parser.add_argument("--config", default=None, help="Explicit config file (overrides --env)")
     parser.add_argument("--symbol", default=None)
+    parser.add_argument("--refit", action="store_true",
+                        help="Refit the harness-ordered TrainingPlan per walk-forward fold")
     parser.add_argument("--window-bars", type=int, default=1440)
     parser.add_argument("--initial-equity", type=float, default=10000.0)
     parser.add_argument("--relax-liquidity", action="store_true",
